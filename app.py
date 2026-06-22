@@ -85,7 +85,6 @@ def get_chapters_from_ai(text, subject_name, retries=3):
         try:
             response = model.generate_content(prompt + f"\nText: {text[:20000]}", generation_config={"response_mime_type": "application/json"})
             raw_text = response.text.strip()
-            # FIXED: Repaired broken syntax checking clean-up loops safely
             if raw_text.startswith("```json"): 
                 raw_text = raw_text[7:-3].strip()
             elif raw_text.startswith("```"): 
@@ -132,6 +131,22 @@ def build_markdown_export(quiz_pool, subject):
         md += f"\n**Correct:** {q['correct']} | **Explanation:** {q['explanation']}\n\n---\n"
     return md
 
+def get_active_chapters(subject):
+    """Dynamically returns only the chapters linked to active files or manual entries."""
+    sub_data = st.session_state['vault'].get(subject, {})
+    # Start with manually entered chapters
+    active_chaps = list(sub_data.get("manual_chapters", []))
+    
+    # Add chapters from active mapped files
+    file_mapping = sub_data.get("file_chapter_mapping", {})
+    active_files = sub_data.get("files", [])
+    
+    for f_name in active_files:
+        if f_name in file_mapping:
+            active_chaps.extend(file_mapping[f_name])
+            
+    return sorted(list(set(active_chaps)))
+
 # --- APP LAYOUT ---
 st.title("📚 Civil Services Smart Quiz Dashboard")
 st.write("---")
@@ -146,7 +161,7 @@ with tab_quiz:
         
         sub_options = []
         if existing_subs:
-            sub_options = ["All Subjects"] + [f"{s} ({len(st.session_state['vault'][s].get('chapters', []))} Chapters)" for s in existing_subs]
+            sub_options = ["All Subjects"] + [f"{s} ({len(get_active_chapters(s))} Chapters)" for s in existing_subs]
             
         sub_mode = st.radio("Mode:", ["Existing Subject", "New Subject"])
         
@@ -157,7 +172,14 @@ with tab_quiz:
             sub_input = st.text_input("Enter New Subject Name:")
         
         if sub_input and sub_input != "All Subjects" and sub_input not in st.session_state['vault']:
-            st.session_state['vault'][sub_input] = {"chapters": [], "content": "", "files": []}
+            # Modern structure to support file mapping tracking natively
+            st.session_state['vault'][sub_input] = {
+                "chapters": [], 
+                "content": "", 
+                "files": [],
+                "file_chapter_mapping": {},
+                "manual_chapters": []
+            }
             save_data()
             st.rerun()
 
@@ -174,27 +196,25 @@ with tab_quiz:
                     if up_files and sub_input:
                         with st.spinner("Vaulting content safely..."):
                             if "files" not in st.session_state['vault'][sub_input]: st.session_state['vault'][sub_input]["files"] = []
+                            if "file_chapter_mapping" not in st.session_state['vault'][sub_input]: st.session_state['vault'][sub_input]["file_chapter_mapping"] = {}
                             
                             for f in up_files:
                                 t = extract_index_text(f.getvalue())
                                 
                                 if len(t.strip()) < 50:
-                                    st.error(f"❌ '{f.name}' appears to be a scanned image PDF. The AI cannot read text from photos. Please upload a digital text PDF.")
+                                    st.error(f"❌ '{f.name}' appears to be a scanned image PDF. Please upload a digital text PDF.")
                                     continue
                                 
                                 ch = get_chapters_from_ai(t, sub_input)
                                 
                                 if not ch:
-                                    st.warning(f"⚠️ AI couldn't detect the index in '{f.name}'. The text was saved for quizzes, but you must type its chapters manually in the 'Manual Topics' tab.")
+                                    st.warning(f"⚠️ AI couldn't detect index in '{f.name}'. Content saved, but chapters must be manually assigned.")
                                 else:
-                                    old_len = len(st.session_state['vault'][sub_input]["chapters"])
+                                    # Map chapters strictly to this file name
+                                    st.session_state['vault'][sub_input]["file_chapter_mapping"][f.name] = ch
+                                    # Backwards compatibility fallback
                                     st.session_state['vault'][sub_input]["chapters"] = list(set(st.session_state['vault'][sub_input]["chapters"] + ch))
-                                    new_len = len(st.session_state['vault'][sub_input]["chapters"])
-                                    added = new_len - old_len
-                                    if added > 0:
-                                        st.success(f"✅ Successfully detected and added {added} new unique chapters from '{f.name}'!")
-                                    else:
-                                        st.info(f"ℹ️ '{f.name}' processed, but its chapters were already in your Vault.")
+                                    st.success(f"✅ Successfully extracted {len(ch)} chapters linked exclusively to '{f.name}'!")
 
                                 st.session_state['vault'][sub_input]["content"] += "\n" + t
                                 st.session_state['vault'][sub_input]["files"].append(f.name)
@@ -202,7 +222,7 @@ with tab_quiz:
                                 
                             st.session_state['vault'][sub_input]["files"] = list(set(st.session_state['vault'][sub_input]["files"]))
                             save_data()
-                            time.sleep(3)
+                            time.sleep(2)
                             st.rerun()
                             
             with opt2:
@@ -210,6 +230,9 @@ with tab_quiz:
                 if st.button("Add Topics"):
                     if man_chaps and sub_input:
                         new_c = [c.strip() for c in man_chaps.split('\n') if c.strip()]
+                        if "manual_chapters" not in st.session_state['vault'][sub_input]:
+                            st.session_state['vault'][sub_input]["manual_chapters"] = []
+                        st.session_state['vault'][sub_input]["manual_chapters"] = list(set(st.session_state['vault'][sub_input]["manual_chapters"] + new_c))
                         st.session_state['vault'][sub_input]["chapters"] = list(set(st.session_state['vault'][sub_input]["chapters"] + new_c))
                         save_data()
                         st.success("Topics committed successfully!")
@@ -217,12 +240,13 @@ with tab_quiz:
                         st.rerun()
 
         st.header("2. Build Custom Deck")
+        # FEATURE FIXED: GRABS ONLY LIVE DYNAMIC ACTIVE CHAPTERS
         if sub_input == "All Subjects":
             chaps = []
-            for s in existing_subs: chaps.extend(st.session_state['vault'][s].get("chapters", []))
+            for s in existing_subs: chaps.extend(get_active_chapters(s))
             chaps = sorted(list(set(chaps)))
         else:
-            chaps = sorted(st.session_state['vault'].get(sub_input, {}).get("chapters", []))
+            chaps = get_active_chapters(sub_input)
             
         select_all = st.checkbox("Select All Chapters")
         sel_chaps = chaps if select_all else st.multiselect("Select Topics:", options=chaps)
@@ -449,7 +473,7 @@ with tab_analytics:
                     top_3_weakest = chap_accuracies[:3]
                                 
                     with st.container():
-                        st.markdown(f"#### 📚 {sub} ({len(st.session_state['vault'].get(sub, {}).get('chapters', []))} Chapters)")
+                        st.markdown(f"#### 📚 {sub} ({len(get_active_chapters(sub))} Chapters)")
                         sc1, sc2 = st.columns([1, 1])
                         with sc1:
                             st.write(f"**Tests Taken:** {len(sub_df)}")
@@ -589,7 +613,13 @@ with tab_settings:
                         if sel_sub_chap not in st.session_state['recycle_bin']["chapters"]:
                             st.session_state['recycle_bin']["chapters"][sel_sub_chap] = []
                         st.session_state['recycle_bin']["chapters"][sel_sub_chap].append(sel_chap_del)
-                        st.session_state['vault'][sel_sub_chap]["chapters"].remove(sel_chap_del)
+                        
+                        # Handle removal from both old tracking array and new tracking array
+                        if sel_chap_del in st.session_state['vault'][sel_sub_chap].get("manual_chapters", []):
+                            st.session_state['vault'][sel_sub_chap]["manual_chapters"].remove(sel_chap_del)
+                        if sel_chap_del in st.session_state['vault'][sel_sub_chap].get("chapters", []):
+                            st.session_state['vault'][sel_sub_chap]["chapters"].remove(sel_chap_del)
+                            
                         save_data()
                         st.success("Moved chapter to Recycle Bin.")
                         time.sleep(1)
@@ -606,10 +636,18 @@ with tab_settings:
                     if st.button("Trash PDF Reference"):
                         if sel_sub_file not in st.session_state['recycle_bin']["files"]:
                             st.session_state['recycle_bin']["files"][sel_sub_file] = []
-                        st.session_state['recycle_bin']["files"][sel_sub_file].append(sel_f_del)
+                            
+                        # Save both file name and its extracted mapping to the recycle bin array
+                        file_chaps = st.session_state['vault'][sel_sub_file].get("file_chapter_mapping", {}).get(sel_f_del, [])
+                        st.session_state['recycle_bin']["files"][sel_sub_file].append({"name": sel_f_del, "mapped_chapters": file_chaps})
+                        
+                        # Strip from active layout list safely
                         st.session_state['vault'][sel_sub_file]["files"].remove(sel_f_del)
+                        if sel_f_del in st.session_state['vault'][sel_sub_file].get("file_chapter_mapping", {}):
+                            del st.session_state['vault'][sel_sub_file]["file_chapter_mapping"][sel_f_del]
+                            
                         save_data()
-                        st.success("Moved file link to Recycle Bin.")
+                        st.success("Moved file link and its mapped chapters to Recycle Bin.")
                         time.sleep(1)
                         st.rerun()
                 else: st.info("No active files links attached.")
@@ -643,13 +681,16 @@ with tab_settings:
                 r_chap = st.selectbox("Select Chapter to Recover:", st.session_state['recycle_bin']["chapters"][r_sub_c])
                 if st.button("Recover Chapter"):
                     if r_sub_c in st.session_state['vault']:
+                        if "manual_chapters" not in st.session_state['vault'][r_sub_c]:
+                            st.session_state['vault'][r_sub_c]["manual_chapters"] = []
+                        st.session_state['vault'][r_sub_c]["manual_chapters"].append(r_chap)
                         st.session_state['vault'][r_sub_c]["chapters"].append(r_chap)
                         st.session_state['recycle_bin']["chapters"][r_sub_c].remove(r_chap)
                         save_data()
                         st.success(f"Restored chapter back to {r_sub_c}!")
                         time.sleep(1)
                         st.rerun()
-                    else: st.error("Parent subject doesn't exist anymore. Restore the subject structure first.")
+                    else: st.error("Parent subject structure missing. Recover the subject first.")
             else: st.caption("Chapter bin empty.")
                 
         with rec_c3:
@@ -658,13 +699,34 @@ with tab_settings:
             active_sub_f_bin = [s for s in sub_f_bin if st.session_state['recycle_bin']["files"][s]]
             if active_sub_f_bin:
                 r_sub_f = st.selectbox("Choose Subject context:", active_sub_f_bin, key="rec_f_sub")
-                r_file = st.selectbox("Select PDF to Recover:", st.session_state['recycle_bin']["files"][r_sub_f])
+                
+                # Dynamic rendering based on data dictionary structure format
+                raw_bin_options = st.session_state['recycle_bin']["files"][r_sub_f]
+                formatted_options = [f["name"] if isinstance(f, dict) else f for f in raw_bin_options]
+                
+                selected_f_name = st.selectbox("Select PDF to Recover:", formatted_options)
+                
                 if st.button("Recover PDF link"):
                     if r_sub_f in st.session_state['vault']:
-                        st.session_state['vault'][r_sub_f]["files"].append(r_file)
-                        st.session_state['recycle_bin']["files"][r_sub_f].remove(r_file)
+                        if "file_chapter_mapping" not in st.session_state['vault'][r_sub_f]:
+                            st.session_state['vault'][r_sub_f]["file_chapter_mapping"] = {}
+                        
+                        # Find matching recovery element block
+                        target_element = None
+                        for item in raw_bin_options:
+                            if isinstance(item, dict) and item["name"] == selected_f_name:
+                                target_element = item
+                                break
+                            elif isinstance(item, str) and item == selected_f_name:
+                                target_element = {"name": item, "mapped_chapters": []}
+                                break
+                        
+                        st.session_state['vault'][r_sub_f]["files"].append(selected_f_name)
+                        st.session_state['vault'][r_sub_f]["file_chapter_mapping"][selected_f_name] = target_element["mapped_chapters"]
+                        
+                        st.session_state['recycle_bin']["files"][r_sub_f].remove(item)
                         save_data()
-                        st.success(f"Linked reference file back to {r_sub_f}!")
+                        st.success(f"Linked reference file and restored its chapters back to {r_sub_f}!")
                         time.sleep(1)
                         st.rerun()
                     else: st.error("Parent subject structure missing.")
