@@ -80,10 +80,11 @@ def extract_index_text(file_bytes, num_pages=50):
     except Exception: return ""
 
 def get_chapters_from_ai(text, subject_name, retries=3):
-    prompt = f"Extract chapter names from this {subject_name} index. Return ONLY a JSON array of strings. No markdown."
+    prompt = f"Extract chapter names from this {subject_name} index. Return ONLY a JSON array of strings. No markdown formatting loops."
     for attempt in range(retries):
         try:
-            response = model.generate_content(prompt + f"\nText: {text[:20000]}", generation_config={"response_mime_type": "application/json"})
+            # Expanded reading window to comfortably reach deeply buried indices
+            response = model.generate_content(prompt + f"\nText: {text[:30000]}", generation_config={"response_mime_type": "application/json"})
             raw_text = response.text.strip()
             if raw_text.startswith("```json"): 
                 raw_text = raw_text[7:-3].strip()
@@ -132,12 +133,9 @@ def build_markdown_export(quiz_pool, subject):
     return md
 
 def get_active_chapters(subject):
-    """Dynamically returns only the chapters linked to active files or manual entries."""
     sub_data = st.session_state['vault'].get(subject, {})
-    # Start with manually entered chapters
     active_chaps = list(sub_data.get("manual_chapters", []))
     
-    # Add chapters from active mapped files
     file_mapping = sub_data.get("file_chapter_mapping", {})
     active_files = sub_data.get("files", [])
     
@@ -172,7 +170,6 @@ with tab_quiz:
             sub_input = st.text_input("Enter New Subject Name:")
         
         if sub_input and sub_input != "All Subjects" and sub_input not in st.session_state['vault']:
-            # Modern structure to support file mapping tracking natively
             st.session_state['vault'][sub_input] = {
                 "chapters": [], 
                 "content": "", 
@@ -210,9 +207,7 @@ with tab_quiz:
                                 if not ch:
                                     st.warning(f"⚠️ AI couldn't detect index in '{f.name}'. Content saved, but chapters must be manually assigned.")
                                 else:
-                                    # Map chapters strictly to this file name
                                     st.session_state['vault'][sub_input]["file_chapter_mapping"][f.name] = ch
-                                    # Backwards compatibility fallback
                                     st.session_state['vault'][sub_input]["chapters"] = list(set(st.session_state['vault'][sub_input]["chapters"] + ch))
                                     st.success(f"✅ Successfully extracted {len(ch)} chapters linked exclusively to '{f.name}'!")
 
@@ -240,7 +235,6 @@ with tab_quiz:
                         st.rerun()
 
         st.header("2. Build Custom Deck")
-        # FEATURE FIXED: GRABS ONLY LIVE DYNAMIC ACTIVE CHAPTERS
         if sub_input == "All Subjects":
             chaps = []
             for s in existing_subs: chaps.extend(get_active_chapters(s))
@@ -614,7 +608,6 @@ with tab_settings:
                             st.session_state['recycle_bin']["chapters"][sel_sub_chap] = []
                         st.session_state['recycle_bin']["chapters"][sel_sub_chap].append(sel_chap_del)
                         
-                        # Handle removal from both old tracking array and new tracking array
                         if sel_chap_del in st.session_state['vault'][sel_sub_chap].get("manual_chapters", []):
                             st.session_state['vault'][sel_sub_chap]["manual_chapters"].remove(sel_chap_del)
                         if sel_chap_del in st.session_state['vault'][sel_sub_chap].get("chapters", []):
@@ -637,11 +630,9 @@ with tab_settings:
                         if sel_sub_file not in st.session_state['recycle_bin']["files"]:
                             st.session_state['recycle_bin']["files"][sel_sub_file] = []
                             
-                        # Save both file name and its extracted mapping to the recycle bin array
                         file_chaps = st.session_state['vault'][sel_sub_file].get("file_chapter_mapping", {}).get(sel_f_del, [])
                         st.session_state['recycle_bin']["files"][sel_sub_file].append({"name": sel_f_del, "mapped_chapters": file_chaps})
                         
-                        # Strip from active layout list safely
                         st.session_state['vault'][sel_sub_file]["files"].remove(sel_f_del)
                         if sel_f_del in st.session_state['vault'][sel_sub_file].get("file_chapter_mapping", {}):
                             del st.session_state['vault'][sel_sub_file]["file_chapter_mapping"][sel_f_del]
@@ -700,7 +691,6 @@ with tab_settings:
             if active_sub_f_bin:
                 r_sub_f = st.selectbox("Choose Subject context:", active_sub_f_bin, key="rec_f_sub")
                 
-                # Dynamic rendering based on data dictionary structure format
                 raw_bin_options = st.session_state['recycle_bin']["files"][r_sub_f]
                 formatted_options = [f["name"] if isinstance(f, dict) else f for f in raw_bin_options]
                 
@@ -711,7 +701,6 @@ with tab_settings:
                         if "file_chapter_mapping" not in st.session_state['vault'][r_sub_f]:
                             st.session_state['vault'][r_sub_f]["file_chapter_mapping"] = {}
                         
-                        # Find matching recovery element block
                         target_element = None
                         for item in raw_bin_options:
                             if isinstance(item, dict) and item["name"] == selected_f_name:
