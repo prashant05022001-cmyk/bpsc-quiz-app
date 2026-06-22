@@ -4,13 +4,13 @@ import google.generativeai as genai
 import json
 import random
 import time
+import io
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Civil Services Smart Quiz Dashboard", page_icon="📚", layout="wide")
 
 # --- INITIALIZE COGNITIVE DATA DEKS (PERSISTENT ALONG SESSION) ---
 if 'vault' not in st.session_state:
-    # Pre-populating structure for persistent tracking
     st.session_state['vault'] = {
         "History": ["Revolt of 1857", "Socio-Religious Reform Movements", "Advent of Europeans", "Indian National Congress"],
         "Polity": ["Fundamental Rights", "Preamble & Historical Background", "Directive Principles of State Policy"],
@@ -23,7 +23,7 @@ if 'active_quiz' not in st.session_state:
 if 'quiz_submitted' not in st.session_state:
     st.session_state['quiz_submitted'] = False
 if 'quiz_history_log' not in st.session_state:
-    st.session_state['quiz_history_log'] = [] # Stores performance metrics
+    st.session_state['quiz_history_log'] = [] 
 
 # --- API CONFIGURATION ---
 try:
@@ -32,10 +32,12 @@ try:
 except Exception as e:
     st.error("API Key missing! Please add it in Streamlit Advanced Settings.")
 
-# --- HELPERS ---
-def extract_index_text(pdf_file, num_pages=20):
+# --- SPEED OPTIMIZATION: CACHING ---
+# Caching prevents the app from re-reading large PDFs every time the screen updates
+@st.cache_data(show_spinner=False)
+def extract_index_text(file_bytes, num_pages=20):
     try:
-        pdf_reader = PyPDF2.PdfReader(pdf_file)
+        pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
         text = ""
         pages_to_read = min(len(pdf_reader.pages), num_pages)
         for page_num in range(pages_to_read):
@@ -72,15 +74,6 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types):
     
     You must balance the selection across the following requested question formats: {types_str}.
     
-    CRITICAL FORMAT STIPULATIONS FOR PATTERNS:
-    1. Single Correct MCQ: Standard four-option analytical questions.
-    2. Statement Based Questions: Provide 2 or 3 numbered statements, followed by standard choices (e.g., "Only 1 and 2", "All of the above").
-    3. Assertion Reason: Formatted strictly with an 'Assertion (A)' and 'Reason (R)' text followed by analytical correlation evaluations.
-    4. Match the Following: Formatted with List I and List II pairs, with the options showing the accurate alphanumeric mapping combinations.
-    5. Chronology Based: Present historical developments/events/phases to be re-arranged into accurate sequential progression timelines.
-    6. Map Based / Spatial Context: Frame situational questions evaluating spatial distribution, geographical markers, or structural setups described conceptually.
-    7. Multiple Statement Analysis: Multi-layered evaluation parameters assessing truth thresholds of institutional actions or systemic conditions.
-
     Return a clean JSON array matching this exact schema:
     [
       {{
@@ -131,7 +124,6 @@ with tab_quiz:
     with col_setup:
         st.header("1. Sync Content Vault")
         
-        # Subject selection linked directly to persistence engine
         existing_subjects = list(st.session_state['vault'].keys())
         subject_mode = st.radio("Subject Input:", ["Select Existing Subject", "Create New Subject"])
         
@@ -150,9 +142,10 @@ with tab_quiz:
             uploaded_files = st.file_uploader("Upload Compilation/Index PDFs:", type="pdf", accept_multiple_files=True)
             if st.button("Extract via Gemini 2.5 Engine"):
                 if sub_input and uploaded_files:
-                    with st.spinner("Decoding content index matrices..."):
+                    with st.spinner("Decoding content index matrices (Accelerated)..."):
                         for f in uploaded_files:
-                            raw_index = extract_index_text(f)
+                            # Using .getvalue() to pass bytes to our newly cached function
+                            raw_index = extract_index_text(f.getvalue())
                             extracted = get_chapters_from_ai(raw_index, sub_input)
                             if extracted:
                                 updated_list = list(set(st.session_state['vault'].get(sub_input, []) + extracted))
@@ -175,17 +168,16 @@ with tab_quiz:
         st.header("2. Build Custom Test Deck")
         
         available_chaps = st.session_state['vault'].get(sub_input, []) if sub_input else []
-        
-        # MULTI-CHAPTER SELECTION COMPONENT
         selected_ch_list = st.multiselect("Target Chapters (Select Multiple):", options=available_chaps)
         
         diff_level = st.selectbox("Target Analytical Rigor:", ["Easy Overview", "Moderate Conceptual", "Hard Applied", "Very Hard (UPSC/BPSC Rank Decider)"])
         q_count = st.slider("Target Question Volume:", min_value=5, max_value=25, value=10)
         
-        # NEGATIVE MARKING CONTROLS
+        # --- NEW MANUAL TIMER COMPONENT ---
+        st.markdown("**Session Constraints:**")
+        time_limit_mins = st.number_input("Set Timer Duration (Minutes):", min_value=1, max_value=180, value=q_count)
         neg_marking_toggle = st.checkbox("Apply Standard Negative Marking (1/3rd penalty)", value=True)
         
-        # ADVANCED COMPETITIVE EXAMINATION PATTERNS SELECTION
         st.markdown("**Include Question Formats:**")
         mcq_type = st.checkbox("Single Correct MCQ", value=True)
         stmt_type = st.checkbox("Statement Based Questions", value=True)
@@ -210,7 +202,7 @@ with tab_quiz:
             elif not selected_patterns:
                 st.error("Select at least one question format pattern.")
             else:
-                with st.spinner("Compiling multi-pattern question structure from engine servers..."):
+                with st.spinner("Compiling multi-pattern question structure from AI servers... (This takes ~15 seconds)"):
                     fresh_qs = generate_new_questions(sub_input, selected_ch_list, diff_level, q_count, selected_patterns)
                     if fresh_qs:
                         for q in fresh_qs:
@@ -220,14 +212,15 @@ with tab_quiz:
                         st.session_state['active_quiz'] = fresh_qs
                         st.session_state['quiz_submitted'] = False
                         st.session_state['test_start_time'] = time.time()
-                        st.session_state['target_duration'] = q_count * 60 # Allocating 1 minute per item
+                        
+                        # Set target duration based on user input
+                        st.session_state['target_duration'] = time_limit_mins * 60 
                         st.rerun()
 
     with col_display:
         st.header("3. Examination Chamber")
         
         if st.session_state['active_quiz']:
-            # DYNAMIC LIVE EXAM COUNTDOWN TIMER COMPONENT
             if not st.session_state['quiz_submitted']:
                 elapsed = time.time() - st.session_state.get('test_start_time', time.time())
                 remaining = max(0, int(st.session_state.get('target_duration', 600) - elapsed))
@@ -235,7 +228,7 @@ with tab_quiz:
                 
                 if remaining > 0:
                     st.metric(label="⏱️ Dynamic Session Countdown Time Remaining", value=f"{mins:02d}:{secs:02d}")
-                    if st.button("Force Sync Timer / Refresh Board View"):
+                    if st.button("Sync Timer / Refresh Board"):
                         st.rerun()
                 else:
                     st.error("🚨 Allocated Session Duration Expired! Please compile your final responses immediately.")
@@ -261,7 +254,6 @@ with tab_quiz:
                 if st.button("Submit Assessment & Close Papers"):
                     st.session_state['quiz_submitted'] = True
                     
-                    # Compute Performance Score Metrics
                     correct_tally = 0
                     incorrect_tally = 0
                     skipped_tally = 0
@@ -275,12 +267,10 @@ with tab_quiz:
                         else:
                             incorrect_tally += 1
                             
-                    # Raw and Net Evaluation Calculation (Applying 1/3 penalty factor)
-                    raw_score = correct_tally * 2 # Assumed 2 marks per question typical setup
+                    raw_score = correct_tally * 2
                     penalty = (incorrect_tally * (2/3)) if neg_marking_toggle else 0.0
                     net_score = raw_score - penalty
                     
-                    # Store Metrics data point permanently for analysis
                     st.session_state['quiz_history_log'].append({
                         "subject": q['subject'],
                         "correct": correct_tally,
@@ -291,7 +281,6 @@ with tab_quiz:
                     })
                     st.rerun()
             else:
-                # Post-Submission Evaluation Matrix Display
                 st.success("📝 Performance Score Card Generated Successfully")
                 latest_run = st.session_state['quiz_history_log'][-1] if st.session_state['quiz_history_log'] else {}
                 
@@ -301,7 +290,6 @@ with tab_quiz:
                 m_col3.metric("Skipped", f"⚪ {latest_run.get('skipped', 0)}")
                 m_col4.metric("Net Secured Marks", f"🎯 {latest_run.get('net', 0.0)}")
                 
-                # ONE-CLICK EXPORT TO MARKDOWN / DETAILED TEXT BLOCK DOWNLOAD COMPONENT
                 md_output = build_markdown_export(st.session_state['active_quiz'], st.session_state['active_quiz'][0]['subject'])
                 st.download_button(
                     label="📄 Export Practice Set & Solutions (.md format for iPad)",
@@ -339,7 +327,6 @@ with tab_quiz:
 with tab_analytics:
     st.header("📊 Performance Analytics Intelligence Dashboard")
     if st.session_state['quiz_history_log']:
-        # Extract and aggregate dynamic analysis points
         total_tests = len(st.session_state['quiz_history_log'])
         accumulated_correct = sum(item['correct'] for item in st.session_state['quiz_history_log'])
         accumulated_incorrect = sum(item['incorrect'] for item in st.session_state['quiz_history_log'])
@@ -355,7 +342,6 @@ with tab_analytics:
         st.write("---")
         st.subheader("Subject-Wise Accuracy Trends")
         
-        # Build lightweight internal aggregation matrix
         subject_stats = {}
         for item in st.session_state['quiz_history_log']:
             sub = item['subject']
@@ -371,7 +357,6 @@ with tab_analytics:
             
         st.bar_chart(chart_data)
         
-        # Display warning indicators for chapters needing revision
         st.markdown("### ⚠️ Targeted Revision Advisory Metrics")
         for sub, data in subject_stats.items():
             accuracy = (data["correct"] / data["total"]) * 100 if data["total"] > 0 else 0.0
