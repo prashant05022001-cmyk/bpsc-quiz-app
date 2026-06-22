@@ -4,7 +4,15 @@ import os
 import gspread
 from google.oauth2.service_account import Credentials
 
-# --- 1. CLOUD DATABASE CONNECTION ---
+# --- 1. CLEAN DATA HELPER (Fixes the JSON Error) ---
+def get_clean_data():
+    """Extracts only the data we want to save, stripping out internal Streamlit objects."""
+    return {
+        "vault": st.session_state.get("vault", {}),
+        "quiz_history": st.session_state.get("quiz_history", [])
+    }
+
+# --- 2. CLOUD DATABASE CONNECTION ---
 def get_gspread_client():
     try:
         # Check if secrets exist
@@ -14,7 +22,7 @@ def get_gspread_client():
         creds = Credentials.from_service_account_info(json_creds)
         client = gspread.authorize(creds)
         return client, st.secrets["SHEET_ID"]
-    except:
+    except Exception:
         return None, None
 
 def save_data_to_cloud(data):
@@ -22,13 +30,18 @@ def save_data_to_cloud(data):
     if client and sheet_id:
         try:
             sheet = client.open_by_key(sheet_id).sheet1
+            # Save the clean data as a JSON string
             sheet.update(range_name='A1', values=[[json.dumps(data, default=str)]])
-        except:
+        except Exception:
             pass 
 
-# --- 2. INITIALIZE APP STATE ---
+# --- 3. INITIALIZE APP STATE ---
 if 'vault' not in st.session_state:
-    # A. Try loading from Cloud
+    # A. Load Defaults
+    st.session_state['vault'] = {}
+    st.session_state['quiz_history'] = []
+    
+    # B. Try loading from Cloud
     client, sheet_id = get_gspread_client()
     loaded_from_cloud = False
     if client:
@@ -37,26 +50,27 @@ if 'vault' not in st.session_state:
             if val:
                 st.session_state.update(json.loads(val))
                 loaded_from_cloud = True
-        except:
+        except Exception:
             pass
             
-    # B. If Cloud failed, load from local file
+    # C. Fallback: Load from local file if cloud was empty/failed
     if not loaded_from_cloud and os.path.exists("database.json"):
-        with open("database.json", "r") as f:
-            st.session_state.update(json.load(f))
-            
-    # C. Default setup
-    if 'vault' not in st.session_state:
-        st.session_state['vault'] = {}
-        st.session_state['quiz_history'] = []
+        try:
+            with open("database.json", "r") as f:
+                st.session_state.update(json.load(f))
+        except Exception:
+            pass
 
-# --- 3. SAVE FUNCTION ---
+# --- 4. SAVE FUNCTION ---
 def save_data():
+    data = get_clean_data()
+    # Save local
     with open("database.json", "w") as f:
-        json.dump(st.session_state, f, default=str)
-    save_data_to_cloud(st.session_state)
+        json.dump(data, f)
+    # Save cloud
+    save_data_to_cloud(data)
 
-# --- 4. INTERFACE ---
+# --- 5. INTERFACE ---
 st.set_page_config(page_title="Civil Services Dashboard", layout="wide")
 st.title("📚 Civil Services Smart Quiz Dashboard")
 
@@ -69,42 +83,34 @@ else:
 
 tab1, tab2, tab3, tab4 = st.tabs(["🎯 Live Simulator", "📊 Analytics Hub", "📚 Question Bank", "⚙️ Vault Management"])
 
-# TAB 1: Live Simulator
+# Tab 1
 with tab1:
     st.header("Live Simulator")
     subject = st.selectbox("Select Subject", ["General"] + list(st.session_state['vault'].keys()))
     if st.button("Start Quiz"):
         st.write(f"Starting quiz for {subject}...")
 
-# TAB 2: Analytics Hub
+# Tab 2
 with tab2:
     st.header("Analytics Hub")
-    st.write("Progress tracking metrics will appear here.")
     if st.session_state['quiz_history']:
-        st.bar_chart(st.session_state['quiz_history'])
+        st.write("Progress data loaded.")
 
-# TAB 3: Question Bank
+# Tab 3
 with tab3:
     st.header("Question Bank")
     new_sub = st.text_input("New Subject Name")
     if st.button("Add Subject"):
-        st.session_state['vault'][new_sub] = []
-        save_data()
-        st.rerun()
-    
-    selected_sub = st.selectbox("Add Question to Subject:", list(st.session_state['vault'].keys()))
-    q = st.text_input("Question")
-    a = st.text_input("Answer")
-    if st.button("Add Question"):
-        st.session_state['vault'][selected_sub].append({"q": q, "a": a})
-        save_data()
-        st.success("Question Added!")
+        if new_sub and new_sub not in st.session_state['vault']:
+            st.session_state['vault'][new_sub] = []
+            save_data()
+            st.rerun()
 
-# TAB 4: Vault Management
+# Tab 4
 with tab4:
     st.header("Vault Management")
     if st.button("Force Sync to Cloud"):
         save_data()
         st.success("Synced to Google Sheets!")
     
-    st.download_button("Download Backup File", json.dumps(st.session_state), "backup.json")
+    st.download_button("Download Backup File", json.dumps(get_clean_data()), "backup.json")
