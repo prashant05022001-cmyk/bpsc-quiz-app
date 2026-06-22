@@ -82,19 +82,25 @@ def extract_index_text(file_bytes, num_pages=30):
     except Exception as e:
         return ""
 
-def get_chapters_from_ai(text, subject_name):
+def get_chapters_from_ai(text, subject_name, retries=3):
     prompt = f"""
     Analyze this text from a {subject_name} textbook/index compilation. Extract the core chapter or topic names.
     Return ONLY a JSON array of strings. Example: ["Topic Alpha", "Topic Beta"]
     Text: {text}
     """
-    try:
-        response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-        return json.loads(response.text)
-    except Exception:
-        return []
+    for attempt in range(retries):
+        try:
+            response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+            return json.loads(response.text)
+        except Exception as e:
+            if "429" in str(e) or "Quota exceeded" in str(e):
+                st.warning(f"⚠️ Google API Speed Limit hit. Auto-retrying in 25 seconds... (Attempt {attempt + 1}/{retries})")
+                time.sleep(25)
+            else:
+                return []
+    return []
 
-def generate_new_questions(subject, chapters, difficulty, count, item_types, context_text):
+def generate_new_questions(subject, chapters, difficulty, count, item_types, context_text, retries=3):
     chapters_str = ", ".join(chapters)
     types_str = ", ".join(item_types)
     
@@ -120,12 +126,18 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, con
       }}
     ]
     """
-    try:
-        response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
-        return json.loads(response.text)
-    except Exception as e:
-        st.error(f"🚨 AI Error Details: {str(e)}")
-        return []
+    for attempt in range(retries):
+        try:
+            response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+            return json.loads(response.text)
+        except Exception as e:
+            if "429" in str(e) or "Quota exceeded" in str(e):
+                st.warning(f"⚠️ Google API Speed Limit hit. AI is taking a breath. Auto-retrying in 25 seconds... (Attempt {attempt + 1}/{retries})")
+                time.sleep(25)
+            else:
+                st.error(f"🚨 AI Error Details: {str(e)}")
+                return []
+    return []
 
 def generate_ai_insights(log_data):
     prompt = f"""
@@ -182,7 +194,7 @@ with tab_quiz:
             uploaded_files = st.file_uploader("Upload PDFs (Saved permanently to vault):", type="pdf", accept_multiple_files=True)
             if st.button("Extract & Save to Vault"):
                 if sub_input and uploaded_files:
-                    with st.spinner("Decoding and permanently storing content..."):
+                    with st.spinner("Decoding and permanently storing content... (Adding safe delays to prevent Google errors)"):
                         for f in uploaded_files:
                             raw_text = extract_index_text(f.getvalue())
                             extracted_chaps = get_chapters_from_ai(raw_text, sub_input)
@@ -267,7 +279,7 @@ with tab_quiz:
                         st.session_state['target_duration'] = time_limit_mins * 60 
                         st.rerun()
                     else:
-                        st.error("AI Generation failed. Please try again.")
+                        st.error("AI Generation failed entirely due to persistent quota limits. Please try again later.")
 
     with col_display:
         st.header("3. Examination Chamber")
