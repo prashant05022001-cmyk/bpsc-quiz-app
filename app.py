@@ -176,8 +176,9 @@ with tab_quiz:
             
         select_all = st.checkbox("Select All Chapters")
         sel_chaps = chaps if select_all else st.multiselect("Select Topics:", options=chaps)
-            
-        diff = st.selectbox("Difficulty:", ["Moderate", "Hard", "UPSC Level"])
+        
+        # FEATURE 1: ADDED 'EASY' DIFFICULTY
+        diff = st.selectbox("Difficulty:", ["Easy", "Moderate", "Hard", "UPSC Level"])
         q_vol = st.slider("Total Questions:", 5, 25, 10)
         t_limit = st.number_input("Timer (Mins):", 1, 60, q_vol)
         
@@ -359,12 +360,57 @@ with tab_analytics:
     else:
         tabs = st.tabs(["Overall Summary"] + subjects)
         
+        # FEATURE 3: MASTER DASHBOARD SUMMARY
         with tabs[0]:
-            st.subheader("Total Preparation Overview")
+            st.subheader("Global Command Center")
             df = pd.DataFrame(st.session_state['quiz_history_log'])
             if not df.empty:
-                st.write(f"**Total Tests Taken:** {len(df)}")
-                st.write(f"**Average Net Score:** {df['net'].mean():.2f}")
+                cm1, cm2 = st.columns(2)
+                cm1.metric("Total Tests Taken", len(df))
+                cm2.metric("Average Net Score", f"{df['net'].mean():.2f}")
+                
+                st.write("---")
+                st.subheader("Subject-Wise Master Analytics")
+                
+                for sub in df['subject'].unique():
+                    sub_df = df[df['subject'] == sub]
+                    
+                    agg_c_perf = {}
+                    t_cor = sub_df['correct'].sum()
+                    t_wrg = sub_df['incorrect'].sum()
+                    t_skp = sub_df['skipped'].sum()
+                    
+                    for perf in sub_df['chapter_perf']:
+                        if isinstance(perf, dict):
+                            for ch, metrics in perf.items():
+                                if ch not in agg_c_perf: agg_c_perf[ch] = {"correct": 0, "incorrect": 0}
+                                agg_c_perf[ch]["correct"] += metrics.get("correct", 0)
+                                agg_c_perf[ch]["incorrect"] += metrics.get("incorrect", 0)
+                                
+                    weak_ch = "N/A"
+                    low_acc = 101
+                    for ch, met in agg_c_perf.items():
+                        tot = met['correct'] + met['incorrect']
+                        if tot > 0:
+                            acc = (met['correct'] / tot) * 100
+                            if acc < low_acc:
+                                low_acc = acc
+                                weak_ch = f"{ch} ({acc:.1f}% Accuracy)"
+                                
+                    with st.container():
+                        st.markdown(f"#### 📚 {sub}")
+                        sc1, sc2 = st.columns([1, 1])
+                        with sc1:
+                            st.write(f"**Tests Taken:** {len(sub_df)}")
+                            st.write(f"**Average Score:** {sub_df['net'].mean():.2f}")
+                            if weak_ch != "N/A": st.error(f"🚨 **Critical Weakness:** {weak_ch}")
+                            else: st.info("Need more data for weakness analysis.")
+                        with sc2:
+                            pie_df = pd.DataFrame({"Outcome": ["Correct", "Wrong", "Skipped"], "Count": [t_cor, t_wrg, t_skp]})
+                            fig = px.pie(pie_df, values='Count', names='Outcome', color='Outcome', color_discrete_map={"Correct": "green", "Wrong": "red", "Skipped": "gray"})
+                            fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=200)
+                            st.plotly_chart(fig, use_container_width=True)
+                        st.divider()
             
         for i, sub in enumerate(subjects):
             with tabs[i+1]:
@@ -428,7 +474,8 @@ with tab_history:
                     right_qs = [q for q in chap_qs if q.get('last_attempt_correct') == True]
                     wrong_qs = [q for q in chap_qs if q.get('last_attempt_correct') in [False, None]]
                     
-                    with st.expander(f"📖 Chapter: {chap} ({len(chap_qs)} questions)"):
+                    # FEATURE 2: QUESTION BANK TALLY AT A GLANCE
+                    with st.expander(f"📖 {chap} (Total: {len(chap_qs)} | ✅ {len(right_qs)} | ❌ {len(wrong_qs)})"):
                         rt_tab, wt_tab = st.tabs([f"✅ Mastered ({len(right_qs)})", f"❌ Needs Revision ({len(wrong_qs)})"])
                         
                         with wt_tab:
