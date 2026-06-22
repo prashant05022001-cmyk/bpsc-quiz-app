@@ -29,7 +29,6 @@ except Exception as e:
 
 # --- HELPERS ---
 def extract_index_text(pdf_file, num_pages=20):
-    """Extracts text and checks if the PDF is just scanned images."""
     try:
         pdf_reader = PyPDF2.PdfReader(pdf_file)
         text = ""
@@ -44,22 +43,28 @@ def extract_index_text(pdf_file, num_pages=20):
 
 def get_chapters_from_ai(text, subject_name):
     prompt = f"""
-    Analyze this index text from a {subject_name} textbook. 
-    Extract a clean list of individual chapter names.
-    Return ONLY a valid JSON array of strings containing the chapter names. Do not include markdown blocks or any conversational text.
-    Example output format: ["Chapter 1: Arrival of British", "Chapter 2: Revolt of 1857"]
-    Text: {text}
+    Analyze this text from a {subject_name} book/magazine index.
+    Extract all the chapter or topic names.
+    Return them as a plain list, with each chapter on a new line. 
+    Do not write any introduction, markdown, or explanation. Just the list of topics.
+    
+    Text:
+    {text}
     """
     try:
         response = model.generate_content(prompt)
-        # Forcefully find the JSON brackets even if AI talks too much
-        match = re.search(r'\[.*\]', response.text, re.DOTALL)
-        if match:
-            return json.loads(match.group(0))
-        return json.loads(response.text)
+        # Plain text parsing (Unbreakable)
+        lines = response.text.split("\n")
+        chapters = []
+        for line in lines:
+            # Clean off bullets, dashes, and numbers
+            clean_line = line.strip().lstrip("-*•0123456789. ").strip()
+            # Ignore empty lines or conversational AI apologies
+            if clean_line and len(clean_line) > 3 and not clean_line.lower().startswith("here is") and not clean_line.lower().startswith("these are"):
+                chapters.append(clean_line)
+        return chapters if chapters else ["General Review Topic"]
     except Exception as e:
-        st.error(f"Failed to read chapters from AI response. Format error.")
-        return ["Error: Could not extract chapters"]
+        return ["General Review Topic"]
 
 def generate_new_questions(subject, chapter, difficulty, count):
     prompt = f"""
@@ -82,7 +87,6 @@ def generate_new_questions(subject, chapter, difficulty, count):
     """
     try:
         response = model.generate_content(prompt)
-        # Forcefully find the JSON data
         match = re.search(r'\[.*\]', response.text, re.DOTALL)
         if match:
             return json.loads(match.group(0))
@@ -103,20 +107,20 @@ with tab_quiz:
     with col_setup:
         st.header("1. Sync Materials")
         sub_input = st.text_input("Subject Name:", value=st.session_state['current_subject'], placeholder="e.g., Indian Polity")
+        
+        st.write("---")
+        st.subheader("Option A: Extract from PDF")
         uploaded_files = st.file_uploader("Upload Chapter/Book PDFs:", type="pdf", accept_multiple_files=True)
         
-        if st.button("Extract Chapters"):
+        if st.button("Extract Chapters via AI"):
             if sub_input and uploaded_files:
                 with st.spinner("Processing PDF text..."):
                     combined_chapters = []
                     for f in uploaded_files:
                         raw_index = extract_index_text(f)
-                        
-                        # NEW CHECK: Warn user if PDF is a scanned image
                         if len(raw_index) < 50:
-                            st.warning(f"⚠️ We could not read text from '{f.name}'. It appears to be a scanned image rather than a text document. Try uploading a different PDF or typing chapters manually.")
+                            st.warning(f"⚠️ We could not read text from '{f.name}'. It might be a scanned image or heavily formatted. Please use Option B below.")
                             continue
-                            
                         chapters = get_chapters_from_ai(raw_index, sub_input)
                         combined_chapters.extend(chapters)
                     
@@ -126,17 +130,31 @@ with tab_quiz:
                         st.success(f"Loaded {len(st.session_state['current_chapters'])} chapters!")
             else:
                 st.error("Please specify a Subject and upload at least one PDF.")
+                
+        st.write("---")
+        st.subheader("Option B: Enter Manually (Fallback)")
+        st.markdown("*Use this if your PDF is too large or fails to extract.*")
+        manual_chapters = st.text_area("Paste chapter names here (one per line):", placeholder="Advent of Europeans\nRevolt of 1857\nIndian National Congress")
+        
+        if st.button("Save Manual Chapters"):
+            if sub_input and manual_chapters:
+                chapters = [line.strip() for line in manual_chapters.split('\n') if line.strip()]
+                st.session_state['current_chapters'] = list(set(st.session_state['current_chapters'] + chapters))
+                st.session_state['current_subject'] = sub_input
+                st.success(f"Successfully added {len(chapters)} manual chapters!")
+            else:
+                st.error("Please enter a subject name and at least one chapter.")
         
         st.write("---")
         st.header("2. Configure Quiz")
         
-        selected_ch = st.selectbox("Select Target Chapter:", options=st.session_state['current_chapters'] if st.session_state['current_chapters'] else ["Upload a file first"])
+        selected_ch = st.selectbox("Select Target Chapter:", options=st.session_state['current_chapters'] if st.session_state['current_chapters'] else ["Upload or type chapters first"])
         diff_level = st.selectbox("Difficulty Level:", ["Easy", "Moderate", "Hard", "Very Hard"])
         q_count = st.slider("Number of Questions:", min_value=10, max_value=20, value=10)
         
         if st.button("Generate Mixed Quiz 🔥"):
-            if not st.session_state['current_chapters'] or selected_ch == "Upload a file first":
-                st.error("Please extract chapters first.")
+            if not st.session_state['current_chapters'] or selected_ch == "Upload or type chapters first":
+                st.error("Please add chapters first using Option A or Option B.")
             else:
                 with st.spinner(f"Assembling custom {diff_level} quiz... This takes about 15 seconds..."):
                     matching_old = [q for q in st.session_state['old_questions'] if q['chapter'] == selected_ch]
@@ -145,7 +163,6 @@ with tab_quiz:
                     
                     fresh_qs = generate_new_questions(st.session_state['current_subject'], selected_ch, diff_level, fresh_needed)
                     
-                    # NEW CHECK: If generation fails, show an error instead of silently failing
                     if not fresh_qs:
                         st.error("🚨 The AI failed to format the questions correctly. Please click 'Generate Mixed Quiz' again.")
                     else:
