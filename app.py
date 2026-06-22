@@ -13,7 +13,6 @@ import plotly.express as px
 st.set_page_config(page_title="Civil Services Smart Quiz Dashboard", page_icon="📚", layout="wide")
 
 # --- INITIALIZE COGNITIVE DATA DEKS ---
-# The vault now stores BOTH chapters and the extracted raw text content of the PDFs
 if 'vault' not in st.session_state:
     st.session_state['vault'] = {
         "History": {"chapters": ["Revolt of 1857", "Socio-Religious Reform Movements", "Advent of Europeans", "Indian National Congress"], "content": ""},
@@ -67,7 +66,6 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, con
     chapters_str = ", ".join(chapters)
     types_str = ", ".join(item_types)
     
-    # We pass the saved PDF content to ground the AI's knowledge
     content_injection = f"Use this source material if relevant: {context_text[:25000]}" if context_text else ""
     
     prompt = f"""
@@ -151,7 +149,7 @@ with tab_quiz:
             uploaded_files = st.file_uploader("Upload PDFs (Saved permanently to vault):", type="pdf", accept_multiple_files=True)
             if st.button("Extract & Save to Vault"):
                 if sub_input and uploaded_files:
-                    with st.spinner("Decoding and permanently storing content..."):
+                    with st.spinner("Decoding and permanently storing content... (Adding safe delays to prevent Google errors)"):
                         for f in uploaded_files:
                             raw_text = extract_index_text(f.getvalue())
                             extracted_chaps = get_chapters_from_ai(raw_text, sub_input)
@@ -160,8 +158,10 @@ with tab_quiz:
                                 current_chaps = st.session_state['vault'][sub_input]["chapters"]
                                 st.session_state['vault'][sub_input]["chapters"] = list(set(current_chaps + extracted_chaps))
                             
-                            # Append the raw text to the subject's vault content so the AI can read it later!
                             st.session_state['vault'][sub_input]["content"] += "\n" + raw_text
+                            
+                            # THE 4-SECOND SPEED LIMIT FIX IS RIGHT HERE:
+                            time.sleep(4)
                             
                         st.success(f"Chapters and PDF Content safely stored in '{sub_input}' vault!")
                         st.rerun()
@@ -207,16 +207,11 @@ with tab_quiz:
                 st.error("Select at least one targeted chapter structure to execute compilation.")
             else:
                 with st.spinner("Mixing existing knowledge base with freshly generated questions..."):
-                    # 1. Fetch older questions for these chapters
                     matching_old = [q for q in st.session_state['old_questions'] if q['chapter'] in selected_ch_list and q['subject'] == sub_input]
-                    
-                    # 2. Determine ratio: Up to 1/3rd of the quiz can be old revision questions
                     mix_old_count = min(len(matching_old), max(1, q_count // 3)) if matching_old else 0
                     fresh_needed = q_count - mix_old_count
-                    
                     vault_content = st.session_state['vault'].get(sub_input, {}).get("content", "")
                     
-                    # 3. Generate the fresh batch
                     fresh_qs = generate_new_questions(sub_input, selected_ch_list, diff_level, fresh_needed, selected_patterns, vault_content)
                     
                     if fresh_qs or mix_old_count > 0:
@@ -327,7 +322,7 @@ with tab_quiz:
                 m_col4.metric("Net Secured Marks", f"🎯 {latest_run.get('net', 0.0)}")
                 
                 md_output = build_markdown_export(st.session_state['active_quiz'], st.session_state['active_quiz'][0]['subject'])
-                st.download_button("📄 Export Practice Set & Solutions (.md format for iPad)", data=md_output, file_name=f"Exam_Practice_{st.session_state['active_quiz'][0]['subject']}.md", mime="text/markdown")
+                st.download_button("📄 Export Practice Set & Solutions (.md format)", data=md_output, file_name=f"Exam_Practice_{st.session_state['active_quiz'][0]['subject']}.md", mime="text/markdown")
                 
                 st.write("---")
                 for idx, q in enumerate(st.session_state['active_quiz']):
@@ -360,7 +355,6 @@ with tab_analytics:
     if not st.session_state['quiz_history_log']:
         st.info("Performance dashboards will generate dynamically once you submit your first examination.")
     else:
-        # Create dynamic tabs for every subject in the vault
         subject_tabs = st.tabs(subjects)
         
         for i, sub in enumerate(subjects):
@@ -370,7 +364,7 @@ with tab_analytics:
                 if not sub_logs:
                     st.write(f"No mock tests logged for {sub} yet.")
                 else:
-                    for log in reversed(sub_logs): # Show newest first
+                    for log in reversed(sub_logs): 
                         with st.expander(f"📋 {log['test_name']} - {log['date_str']}", expanded=True):
                             colA, colB = st.columns([1, 1])
                             
@@ -383,7 +377,6 @@ with tab_analytics:
                                 st.markdown(f"#### 🎯 Net Marks: {log['net']} / {log['total_items']*2}")
                                 st.markdown(f"⚠️ **Negative Marks Incurred:** -{log['penalty']}")
                                 
-                                # Chapter Strengths & Weaknesses
                                 st.markdown("### Area Analysis")
                                 chapter_perf = log.get('chapter_perf', {})
                                 
@@ -408,7 +401,6 @@ with tab_analytics:
 
                             with colB:
                                 st.markdown("### Marks Distribution")
-                                # Plotly Pie Chart
                                 df = pd.DataFrame({
                                     "Outcome": ["Correct Selections", "Incorrect (Errors)", "Skipped"],
                                     "Count": [log['correct'], log['incorrect'], log['skipped']]
