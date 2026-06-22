@@ -166,8 +166,7 @@ with tab_quiz:
                         st.session_state['vault'][sub_input]["chapters"] = list(set(st.session_state['vault'][sub_input]["chapters"] + new_c))
                         save_data()
                         st.rerun()
-
-        st.header("2. Build Custom Deck")
+st.header("2. Build Custom Deck")
         if sub_input == "All Subjects":
             chaps = []
             for s in existing_subs: chaps.extend(st.session_state['vault'][s].get("chapters", []))
@@ -188,6 +187,10 @@ with tab_quiz:
         with col_m2:
             neg_mark_val = st.number_input("Negative Penalty:", min_value=0.0, max_value=5.0, value=0.66, step=0.01)
 
+        # THE NEW OFFLINE TOGGLE
+        st.write("---")
+        force_revision = st.checkbox("🔄 Revision Mode (Bypass AI & Quotas. Use Question Bank Only)", value=False)
+
         if st.button("Generate Question Deck 🔥"):
             if sel_chaps:
                 with st.spinner("Compiling questions..."):
@@ -195,13 +198,21 @@ with tab_quiz:
                     else: v_text = st.session_state['vault'][sub_input].get("content", "")
                         
                     matching_old = [q for q in st.session_state['old_questions'] if q.get('chapter') in sel_chaps]
-                    mix_count = min(len(matching_old), max(1, q_vol // 2)) if matching_old else 0
-                    fresh_needed = q_vol - mix_count
+                    
+                    # LOGIC SPLIT: Offline vs AI Mode
+                    if force_revision:
+                        if len(matching_old) < q_vol:
+                            st.warning(f"You only have {len(matching_old)} questions saved for these topics. Building test with available questions.")
+                        mix_count = min(len(matching_old), q_vol)
+                        fresh_needed = 0
+                        qs = [] # No AI call made!
+                    else:
+                        mix_count = min(len(matching_old), max(1, q_vol // 2)) if matching_old else 0
+                        fresh_needed = q_vol - mix_count
+                        qs = generate_new_questions(sub_input, sel_chaps, diff, fresh_needed, ["Single Correct MCQ", "Statement Based"], v_text)
                     
                     test_count = len([x for x in st.session_state['quiz_history_log'] if x.get('subject') == sub_input]) + 1
                     test_ref_id = f"{sub_input}_Test_{test_count}"
-                    
-                    qs = generate_new_questions(sub_input, sel_chaps, diff, fresh_needed, ["Single Correct MCQ", "Statement Based"], v_text)
                     
                     if qs or mix_count > 0:
                         for q in qs:
@@ -209,8 +220,9 @@ with tab_quiz:
                             q['difficulty'] = diff
                             q['test_ref'] = test_ref_id
                             
-                        st.session_state['old_questions'].extend(qs)
-                        save_data()
+                        if qs:
+                            st.session_state['old_questions'].extend(qs)
+                            save_data()
                         
                         pool = qs
                         if mix_count > 0: pool += random.sample(matching_old, mix_count)
@@ -223,10 +235,9 @@ with tab_quiz:
                         st.session_state['test_config'] = {"marks": marks_per_q, "penalty": neg_mark_val}
                         st.rerun()
                     else:
-                        st.error("Generation timed out. Google AI Quota reached. Try again later.")
+                        st.error("No questions available. Either generate new ones with AI (check your quota) or select chapters you have previously tested.")
             else:
                 st.error("Please select at least one chapter.")
-
     with col2:
         st.header("3. Examination Chamber")
         if st.session_state['active_quiz']:
