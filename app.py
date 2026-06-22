@@ -1,6 +1,32 @@
 import streamlit as st
 import json
 import os
+
+# --- SAFE IMPORTS ---
+GSPREAD_AVAILABLE = False
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    GSPREAD_AVAILABLE = True
+except ImportError:
+    GSPREAD_AVAILABLE = False
+
+# --- DATABASE LOGIC ---
+def get_gspread_client():
+    if not GSPREAD_AVAILABLE: return None
+    try:
+        # Load secrets from Streamlit
+        if "GSPREAD_JSON" in st.secrets:
+            json_creds = json.loads(st.secrets["GSPREAD_JSON"])
+            creds = Credentials.from_service_account_info(json_creds)
+            return gspread.authorize(creds)
+    except:
+        return None
+
+# Rest of your code follows...
+import streamlit as st
+import json
+import os
 import gspread
 from google.oauth2.service_account import Credentials
 
