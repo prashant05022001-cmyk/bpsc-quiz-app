@@ -1,7 +1,7 @@
 streamlit
 PyPDF2
 google-generativeai
-plotly
 pandas
 plotly
-pandas
+gspread
+google-auth
