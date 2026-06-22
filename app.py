@@ -17,27 +17,23 @@ st.set_page_config(page_title="Civil Services Smart Quiz Dashboard", page_icon="
 DB_FILE = "database.json"
 
 def load_data():
-    """Reads the permanent database file if it exists."""
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r") as f:
                 return json.load(f)
         except Exception:
-            pass # If file is corrupted, fall back to default
-            
-    # Default starter data if no database exists yet
+            pass
     return {
         "vault": {
-            "History": {"chapters": ["Revolt of 1857", "Socio-Religious Reform Movements", "Advent of Europeans", "Indian National Congress"], "content": ""},
-            "Polity": {"chapters": ["Fundamental Rights", "Preamble & Historical Background", "Directive Principles of State Policy"], "content": ""},
-            "Economics": {"chapters": ["National Income Accounting", "Inflation & Monetary Policy", "Budgeting and Fiscal Policy"], "content": ""}
+            "History": {"chapters": ["Revolt of 1857", "Socio-Religious Movements"], "content": ""},
+            "Polity": {"chapters": ["Fundamental Rights", "Preamble"], "content": ""},
+            "Economics": {"chapters": ["Inflation", "Budget"], "content": ""}
         },
         "old_questions": [],
         "quiz_history_log": []
     }
 
 def save_data():
-    """Writes the current session state to the permanent database file."""
     data_to_save = {
         "vault": st.session_state['vault'],
         "old_questions": st.session_state['old_questions'],
@@ -46,7 +42,6 @@ def save_data():
     with open(DB_FILE, "w") as f:
         json.dump(data_to_save, f)
 
-# --- INITIALIZE COGNITIVE DATA DEKS (FROM HARD DRIVE) ---
 if 'db_loaded' not in st.session_state:
     saved_data = load_data()
     st.session_state['vault'] = saved_data.get('vault', {})
@@ -54,7 +49,6 @@ if 'db_loaded' not in st.session_state:
     st.session_state['quiz_history_log'] = saved_data.get('quiz_history_log', [])
     st.session_state['db_loaded'] = True
 
-# Temporary session variables (These reset on refresh, which is normal for mid-quiz states)
 if 'active_quiz' not in st.session_state:
     st.session_state['active_quiz'] = None
 if 'quiz_submitted' not in st.session_state:
@@ -67,9 +61,9 @@ try:
 except Exception as e:
     st.error("API Key missing! Please add it in Streamlit Advanced Settings.")
 
-# --- SPEED OPTIMIZATION & EXTRACTION ---
+# --- HELPERS ---
 @st.cache_data(show_spinner=False)
-def extract_index_text(file_bytes, num_pages=30):
+def extract_index_text(file_bytes, num_pages=50): # Increased to 50 pages for better vaulting
     try:
         pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
         text = ""
@@ -79,51 +73,46 @@ def extract_index_text(file_bytes, num_pages=30):
             if page_text:
                 text += page_text + "\n"
         return text.strip()
-    except Exception as e:
+    except Exception:
         return ""
 
-def get_chapters_from_ai(text, subject_name, retries=3):
-    prompt = f"""
-    Analyze this text from a {subject_name} textbook/index compilation. Extract the core chapter or topic names.
-    Return ONLY a JSON array of strings. Example: ["Topic Alpha", "Topic Beta"]
-    Text: {text}
-    """
+def get_chapters_from_ai(text, subject_name, retries=2):
+    prompt = f"Extract chapter names from this {subject_name} index. Return ONLY a JSON array of strings."
     for attempt in range(retries):
         try:
-            response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+            response = model.generate_content(prompt + f"\nText: {text[:10000]}", generation_config={"response_mime_type": "application/json"})
             return json.loads(response.text)
         except Exception as e:
-            if "429" in str(e) or "Quota exceeded" in str(e):
-                st.warning(f"⚠️ Google API Speed Limit hit. Auto-retrying in 25 seconds... (Attempt {attempt + 1}/{retries})")
-                time.sleep(25)
+            if "429" in str(e):
+                time.sleep(15)
             else:
                 return []
     return []
 
-def generate_new_questions(subject, chapters, difficulty, count, item_types, context_text, retries=3):
-    chapters_str = ", ".join(chapters)
-    types_str = ", ".join(item_types)
+def generate_new_questions(subject, chapters, difficulty, count, item_types, vault_full_text, retries=2):
+    # SMART FILTER: Instead of sending 25k chars, we find the paragraphs that mention our selected chapters
+    relevant_context = ""
+    if vault_full_text:
+        # We look for the first 2000 characters and any sections containing the chapter name
+        relevant_context = vault_full_text[:2000] 
+        for ch in chapters:
+            start_idx = vault_full_text.find(ch)
+            if start_idx != -1:
+                # Grab 2000 characters around the chapter name
+                relevant_context += "\n... " + vault_full_text[max(0, start_idx-500) : start_idx+1500]
     
-    content_injection = f"Use this source material if relevant: {context_text[:25000]}" if context_text else ""
-    
+    # Final "Smart Diet" limit (10,000 chars is the sweet spot for Free Tier)
+    relevant_context = relevant_context[:10000]
+
     prompt = f"""
-    You are an elite expert examiner setting high-tier Civil Services competitive examinations. 
-    Generate exactly {count} highly rigorous multiple-choice questions spanning these combined topics: {chapters_str} within the Subject: {subject}.
-    Target Difficulty: {difficulty}. Balance the formats across: {types_str}.
-    {content_injection}
-    
-    Return a clean JSON array matching this exact schema:
+    Elite Civil Services Examiner Mode.
+    Generate {count} questions for Subject: {subject} | Chapters: {', '.join(chapters)}.
+    Difficulty: {difficulty}. Formats: {', '.join(item_types)}.
+    Source Material context: {relevant_context}
+
+    Return JSON array:
     [
-      {{
-        "id": {random.randint(10000, 99999)},
-        "type": "Statement Based / MCQ / etc",
-        "chapter": "Specific Chapter Name from the list",
-        "question": "The comprehensive text of the question here including statement sets if any.",
-        "options": {{"A": "Option Alpha", "B": "Option Beta", "C": "Option Gamma", "D": "Option Delta"}},
-        "correct": "A",
-        "explanation": "In-depth background analysis clarifying facts.",
-        "extra_info": "High-value analytical observation or core conceptual point."
-      }}
+      {{"id": {random.randint(1000,9999)}, "type": "MCQ", "chapter": "Name", "question": "...", "options": {{"A": "..", "B": "..", "C": "..", "D": ".."}}, "correct": "A", "explanation": "...", "extra_info": "..."}}
     ]
     """
     for attempt in range(retries):
@@ -131,351 +120,118 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, con
             response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
             return json.loads(response.text)
         except Exception as e:
-            if "429" in str(e) or "Quota exceeded" in str(e):
-                st.warning(f"⚠️ Google API Speed Limit hit. AI is taking a breath. Auto-retrying in 25 seconds... (Attempt {attempt + 1}/{retries})")
-                time.sleep(25)
+            if "429" in str(e):
+                st.warning(f"Speed limit hit. Retrying in 20s... ({attempt+1}/2)")
+                time.sleep(20)
             else:
-                st.error(f"🚨 AI Error Details: {str(e)}")
                 return []
     return []
 
 def generate_ai_insights(log_data):
-    prompt = f"""
-    Analyze this student's test performance: {log_data}.
-    Write a short, highly analytical 2-paragraph strategy recommending how they can improve their weak areas and accelerate learning. Keep it professional.
-    """
     try:
-        return model.generate_content(prompt).text
+        return model.generate_content(f"Analyze this test performance and suggest a UPSC study strategy: {log_data}").text
     except:
-        return "Insight generation temporarily unavailable."
+        return "Insights unavailable."
 
 def build_markdown_export(quiz_pool, subject):
-    md = f"# Civil Services Exam Practice Set: {subject}\n\n"
+    md = f"# Practice Set: {subject}\n\n"
     for idx, q in enumerate(quiz_pool):
-        md += f"### Q{idx+1} [{q.get('type', 'MCQ')}] ({q.get('chapter', '')})\n"
-        md += f"{q['question']}\n\n"
-        for k, v in q['options'].items():
-            md += f"- **{k}**: {v}\n"
-        md += f"\n**Correct Answer:** Option {q['correct']}\n\n"
-        md += f"**Explanation:** {q['explanation']}\n\n"
-        md += f"**Key Value Point:** *{q['extra_info']}*\n"
-        md += "---\n\n"
+        md += f"### Q{idx+1} [{q.get('type', 'MCQ')}] ({q.get('chapter', '')})\n{q['question']}\n\n"
+        for k, v in q['options'].items(): md += f"- **{k}**: {v}\n"
+        md += f"\n**Correct:** {q['correct']} | **Explanation:** {q['explanation']}\n\n---\n"
     return md
 
 # --- APP LAYOUT ---
-st.title("📚 Civil Services Custom Examination Hub")
-st.markdown("Advanced analytical evaluation dashboard engineered for high-level preparation environments.")
+st.title("📚 Civil Services Smart Quiz Dashboard")
 st.write("---")
 
-tab_quiz, tab_analytics, tab_history = st.tabs(["🎯 Live Test Simulation", "📊 Performance Analytics Dashboard", "🗄️ Question History Repository"])
+tab_quiz, tab_analytics, tab_history = st.tabs(["🎯 Quiz", "📊 Analytics", "🗄️ Repository"])
 
 with tab_quiz:
-    col_setup, col_display = st.columns([1, 2])
-    
-    with col_setup:
-        st.header("1. Sync Content Vault")
+    col1, col2 = st.columns([1, 2])
+    with col1:
+        st.header("1. Vault")
+        existing_subs = list(st.session_state['vault'].keys())
+        sub_input = st.selectbox("Subject:", options=existing_subs) if existing_subs else st.text_input("New Subject:")
         
-        existing_subjects = list(st.session_state['vault'].keys())
-        subject_mode = st.radio("Subject Input:", ["Select Existing Subject", "Create New Subject"])
-        
-        if subject_mode == "Select Existing Subject" and existing_subjects:
-            sub_input = st.selectbox("Choose Target Subject:", options=existing_subjects)
-        else:
-            sub_input = st.text_input("Enter New Subject Name:", placeholder="e.g., Geography")
-            if sub_input and sub_input not in st.session_state['vault']:
-                st.session_state['vault'][sub_input] = {"chapters": [], "content": ""}
-                save_data() # Save immediately when a new subject is made
-        
-        st.write("---")
-        st.subheader("Add Content to Vault")
-        opt_tab1, opt_tab2 = st.tabs(["📄 Upload & Save PDFs", "✍️ Manual Index Entry"])
-        
-        with opt_tab1:
-            uploaded_files = st.file_uploader("Upload PDFs (Saved permanently to vault):", type="pdf", accept_multiple_files=True)
-            if st.button("Extract & Save to Vault"):
-                if sub_input and uploaded_files:
-                    with st.spinner("Decoding and permanently storing content... (Adding safe delays to prevent Google errors)"):
-                        for f in uploaded_files:
-                            raw_text = extract_index_text(f.getvalue())
-                            extracted_chaps = get_chapters_from_ai(raw_text, sub_input)
-                            
-                            if extracted_chaps:
-                                current_chaps = st.session_state['vault'][sub_input]["chapters"]
-                                st.session_state['vault'][sub_input]["chapters"] = list(set(current_chaps + extracted_chaps))
-                            
-                            st.session_state['vault'][sub_input]["content"] += "\n" + raw_text
-                            time.sleep(4)
-                            
-                        save_data() # Save to file after uploading
-                        st.success(f"Chapters and PDF Content permanently stored in '{sub_input}' vault!")
-                        st.rerun()
-                else:
-                    st.error("Ensure Subject Name is established and files are queued.")
-                    
-        with opt_tab2:
-            manual_chapters = st.text_area("Paste topics (one entry per line):", placeholder="e.g., Physiographic Divisions of India\nDrainage System")
-            if st.button("Commit Topics"):
-                if sub_input and manual_chapters:
-                    new_chaps = [line.strip() for line in manual_chapters.split('\n') if line.strip()]
-                    current_chaps = st.session_state['vault'][sub_input]["chapters"]
-                    st.session_state['vault'][sub_input]["chapters"] = list(set(current_chaps + new_chaps))
-                    
-                    save_data() # Save to file after manual entry
-                    st.success(f"Added {len(new_chaps)} chapters to {sub_input}!")
+        if sub_input and sub_input not in st.session_state['vault']:
+            st.session_state['vault'][sub_input] = {"chapters": [], "content": ""}
+            save_data()
+
+        up_files = st.file_uploader("Upload Study Material (PDF)", type="pdf", accept_multiple_files=True)
+        if st.button("Save to Vault"):
+            if up_files:
+                with st.spinner("Vaulting..."):
+                    for f in up_files:
+                        t = extract_index_text(f.getvalue())
+                        ch = get_chapters_from_ai(t, sub_input)
+                        st.session_state['vault'][sub_input]["chapters"] = list(set(st.session_state['vault'][sub_input]["chapters"] + ch))
+                        st.session_state['vault'][sub_input]["content"] += "\n" + t
+                        time.sleep(5)
+                    save_data()
+                    st.success("Saved!")
                     st.rerun()
 
-        st.write("---")
-        st.header("2. Build Custom Test Deck")
+        st.header("2. Build Test")
+        chaps = st.session_state['vault'].get(sub_input, {}).get("chapters", [])
+        sel_chaps = st.multiselect("Select Topics:", options=chaps)
+        q_vol = st.slider("Questions:", 5, 20, 10)
+        t_limit = st.number_input("Minutes:", 1, 60, q_vol)
         
-        available_chaps = st.session_state['vault'].get(sub_input, {}).get("chapters", []) if sub_input else []
-        selected_ch_list = st.multiselect("Target Chapters (Select Multiple):", options=available_chaps)
-        
-        diff_level = st.selectbox("Target Analytical Rigor:", ["Easy Overview", "Moderate Conceptual", "Hard Applied", "Very Hard (UPSC/BPSC Rank Decider)"])
-        q_count = st.slider("Target Question Volume:", min_value=5, max_value=25, value=10)
-        
-        st.markdown("**Session Constraints:**")
-        time_limit_mins = st.number_input("Set Timer Duration (Minutes):", min_value=1, max_value=180, value=q_count)
-        neg_marking_toggle = st.checkbox("Apply Standard Negative Marking (1/3rd penalty)", value=True)
-        
-        st.markdown("**Include Question Formats:**")
-        mcq_type = st.checkbox("Single Correct MCQ", value=True)
-        stmt_type = st.checkbox("Statement Based Questions", value=True)
-        ar_type = st.checkbox("Assertion Reason Matrices", value=True)
-        
-        selected_patterns = []
-        if mcq_type: selected_patterns.append("Single Correct MCQ")
-        if stmt_type: selected_patterns.append("Statement Based Questions")
-        if ar_type: selected_patterns.append("Assertion Reason")
-        if not selected_patterns: selected_patterns.append("Single Correct MCQ")
-
-        if st.button("Generate Mixed Deck (Old + New) 🔥"):
-            if not selected_ch_list:
-                st.error("Select at least one targeted chapter structure to execute compilation.")
-            else:
-                with st.spinner("Mixing existing knowledge base with freshly generated questions..."):
-                    matching_old = [q for q in st.session_state['old_questions'] if q['chapter'] in selected_ch_list and q['subject'] == sub_input]
-                    mix_old_count = min(len(matching_old), max(1, q_count // 3)) if matching_old else 0
-                    fresh_needed = q_count - mix_old_count
-                    vault_content = st.session_state['vault'].get(sub_input, {}).get("content", "")
-                    
-                    fresh_qs = generate_new_questions(sub_input, selected_ch_list, diff_level, fresh_needed, selected_patterns, vault_content)
-                    
-                    if fresh_qs or mix_old_count > 0:
-                        for q in fresh_qs:
-                            q['subject'] = sub_input
-                            q['difficulty'] = diff_level
-                        
-                        st.session_state['old_questions'].extend(fresh_qs)
-                        save_data() # Save newly generated questions permanently
-                        
-                        active_pool = fresh_qs
-                        if mix_old_count > 0:
-                            active_pool += random.sample(matching_old, mix_old_count)
-                        random.shuffle(active_pool)
-                        
-                        st.session_state['active_quiz'] = active_pool
+        if st.button("Start Quiz 🔥"):
+            if sel_chaps:
+                with st.spinner("Generating..."):
+                    v_text = st.session_state['vault'][sub_input]["content"]
+                    qs = generate_new_questions(sub_input, sel_chaps, "Hard", q_vol, ["MCQ", "Statement Based"], v_text)
+                    if qs:
+                        st.session_state['old_questions'].extend(qs)
+                        save_data()
+                        st.session_state['active_quiz'] = qs
                         st.session_state['quiz_submitted'] = False
                         st.session_state['test_start_time'] = time.time()
-                        st.session_state['target_duration'] = time_limit_mins * 60 
+                        st.session_state['target_duration'] = t_limit * 60
                         st.rerun()
-                    else:
-                        st.error("AI Generation failed entirely due to persistent quota limits. Please try again later.")
 
-    with col_display:
-        st.header("3. Examination Chamber")
-        
+    with col2:
+        st.header("3. Exam Hall")
         if st.session_state['active_quiz']:
             if not st.session_state['quiz_submitted']:
-                elapsed = time.time() - st.session_state.get('test_start_time', time.time())
-                remaining = max(0, int(st.session_state.get('target_duration', 600) - elapsed))
-                mins, secs = divmod(remaining, 60)
-                
-                if remaining > 0:
-                    st.metric(label="⏱️ Dynamic Session Countdown Time Remaining", value=f"{mins:02d}:{secs:02d}")
-                    if st.button("Sync Timer / Refresh Board"):
-                        st.rerun()
-                else:
-                    st.error("🚨 Allocated Session Duration Expired! Please compile your final responses immediately.")
+                rem = max(0, int(st.session_state.get('target_duration', 600) - (time.time() - st.session_state.get('test_start_time', time.time()))))
+                st.metric("Time Remaining", f"{rem//60:02d}:{rem%60:02d}")
             
-            st.info(f"📍 **Active Evaluation Track:** {st.session_state['active_quiz'][0]['subject']}")
-            
-            user_answers = {}
-            for idx, q in enumerate(st.session_state['active_quiz']):
-                st.markdown(f"#### **Q{idx+1}. <span style='color:#007BFF;'>[{q.get('type', 'Analytical Evaluation')}]</span> {q['question']}**", unsafe_allow_html=True)
-                opts = q['options']
-                formatted_opts = [f"{k}) {v}" for k, v in opts.items()]
-                
-                user_sel = st.radio(
-                    f"Selection Matrix Q{idx+1}:", 
-                    options=["Not Attempted"] + formatted_opts,
-                    key=f"live_q_{q['id']}_{idx}",
-                    label_visibility="collapsed"
-                )
-                user_answers[idx] = user_sel.split(")")[0] if ")" in user_sel else "Not Attempted"
-                st.write("")
+            ans = {}
+            for i, q in enumerate(st.session_state['active_quiz']):
+                st.markdown(f"**Q{i+1}.** {q['question']}")
+                ans[i] = st.radio(f"Opt {i}", options=["Skip"] + [f"{k}) {v}" for k,v in q['options'].items()], key=f"q{i}", label_visibility="collapsed")
 
-            if not st.session_state['quiz_submitted']:
-                if st.button("Submit Assessment & Close Papers"):
-                    st.session_state['quiz_submitted'] = True
-                    
-                    correct_tally = 0
-                    incorrect_tally = 0
-                    skipped_tally = 0
-                    chapter_perf = {ch: {"correct": 0, "incorrect": 0} for ch in selected_ch_list}
-                    
-                    for idx, q in enumerate(st.session_state['active_quiz']):
-                        u_ans = user_answers[idx]
-                        q_chap = q.get('chapter', 'Unknown')
-                        if q_chap not in chapter_perf:
-                            chapter_perf[q_chap] = {"correct": 0, "incorrect": 0}
-                            
-                        if u_ans == "Not Attempted":
-                            skipped_tally += 1
-                        elif u_ans == q['correct']:
-                            correct_tally += 1
-                            chapter_perf[q_chap]["correct"] += 1
-                        else:
-                            incorrect_tally += 1
-                            chapter_perf[q_chap]["incorrect"] += 1
-                            
-                    raw_score = correct_tally * 2
-                    penalty = (incorrect_tally * (2/3)) if neg_marking_toggle else 0.0
-                    net_score = raw_score - penalty
-                    
-                    test_name = f"Mock Assessment #{len([log for log in st.session_state['quiz_history_log'] if log['subject'] == sub_input]) + 1}"
-                    
-                    st.session_state['quiz_history_log'].append({
-                        "test_name": test_name,
-                        "date_str": datetime.datetime.now().strftime("%d %b %Y, %I:%M %p"),
-                        "subject": sub_input,
-                        "correct": correct_tally,
-                        "incorrect": incorrect_tally,
-                        "skipped": skipped_tally,
-                        "raw_score": raw_score,
-                        "penalty": round(penalty, 2),
-                        "net": round(net_score, 2),
-                        "total_items": len(st.session_state['active_quiz']),
-                        "chapter_perf": chapter_perf
-                    })
-                    
-                    save_data() # Save the completed test results permanently
-                    st.rerun()
-            else:
-                st.success("📝 Performance Score Card Generated Successfully")
-                latest_run = st.session_state['quiz_history_log'][-1]
-                
-                m_col1, m_col2, m_col3, m_col4 = st.columns(4)
-                m_col1.metric("Correct Selections", f"✅ {latest_run.get('correct', 0)}")
-                m_col2.metric("Negative Penalties", f"❌ -{latest_run.get('penalty', 0)}")
-                m_col3.metric("Skipped", f"⚪ {latest_run.get('skipped', 0)}")
-                m_col4.metric("Net Secured Marks", f"🎯 {latest_run.get('net', 0.0)}")
-                
-                md_output = build_markdown_export(st.session_state['active_quiz'], st.session_state['active_quiz'][0]['subject'])
-                st.download_button("📄 Export Practice Set & Solutions (.md format)", data=md_output, file_name=f"Exam_Practice_{st.session_state['active_quiz'][0]['subject']}.md", mime="text/markdown")
-                
-                st.write("---")
-                for idx, q in enumerate(st.session_state['active_quiz']):
-                    st.markdown(f"**Question {idx+1}:** {q['question']}")
-                    correct_key = q['correct']
-                    user_key = user_answers[idx]
-                    
-                    for k, v in q['options'].items():
-                        if k == correct_key:
-                            st.markdown(f"🟩 **{k}) {v} (Accurate Key)**")
-                        elif k == user_key and user_key != correct_key:
-                            st.markdown(f"🟥 **{k}) {v} (Your Submission)**")
-                        else:
-                            st.markdown(f"⚪ {k}) {v}")
-                    
-                    with st.expander("👁️ View Core Conceptual Breakdown"):
-                        st.write(f"**Explanation:** {q['explanation']}")
-                        st.markdown(f"💡 *Strategic Point:* {q['extra_info']}")
-                
-                if st.button("Purge Current Deck & Reload Simulator"):
+            if st.button("Submit Assessment"):
+                st.session_state['quiz_submitted'] = True
+                correct = sum(1 for i, q in enumerate(st.session_state['active_quiz']) if ans[i].startswith(q['correct']))
+                wrong = len(st.session_state['active_quiz']) - correct - sum(1 for i in ans if ans[i] == "Skip")
+                net = (correct * 2) - (wrong * 0.66)
+                st.session_state['quiz_history_log'].append({"subject": sub_input, "test_name": f"Test {len(st.session_state['quiz_history_log'])+1}", "date": datetime.datetime.now().strftime("%d %b"), "correct": correct, "incorrect": wrong, "net": round(net, 2), "total": len(st.session_state['active_quiz'])})
+                save_data()
+                st.rerun()
+            
+            if st.session_state['quiz_submitted']:
+                st.success(f"Score: {st.session_state['quiz_history_log'][-1]['net']}")
+                if st.button("New Test"):
                     st.session_state['active_quiz'] = None
-                    st.session_state['quiz_submitted'] = False
                     st.rerun()
 
 with tab_analytics:
-    st.header("📊 Performance Analytics Intelligence Dashboard")
-    
-    subjects = list(st.session_state['vault'].keys())
-    
-    if not st.session_state['quiz_history_log']:
-        st.info("Performance dashboards will generate dynamically once you submit your first examination.")
-    else:
-        subject_tabs = st.tabs(subjects)
-        
-        for i, sub in enumerate(subjects):
-            with subject_tabs[i]:
-                sub_logs = [log for log in st.session_state['quiz_history_log'] if log['subject'] == sub]
-                
-                if not sub_logs:
-                    st.write(f"No mock tests logged for {sub} yet.")
-                else:
-                    for log in reversed(sub_logs): 
-                        with st.expander(f"📋 {log['test_name']} - {log['date_str']}", expanded=True):
-                            colA, colB = st.columns([1, 1])
-                            
-                            with colA:
-                                st.markdown("### Score Matrix")
-                                st.write(f"**Total Questions:** {log['total_items']}")
-                                st.write(f"✅ **Right:** {log['correct']}")
-                                st.write(f"❌ **Wrong:** {log['incorrect']}")
-                                st.write(f"⚪ **Skipped:** {log['skipped']}")
-                                st.markdown(f"#### 🎯 Net Marks: {log['net']} / {log['total_items']*2}")
-                                st.markdown(f"⚠️ **Negative Marks Incurred:** -{log['penalty']}")
-                                
-                                st.markdown("### Area Analysis")
-                                chapter_perf = log.get('chapter_perf', {})
-                                
-                                best_chap = "N/A"
-                                worst_chap = "N/A"
-                                max_acc = -1
-                                min_acc = 101
-                                
-                                for ch, metrics in chapter_perf.items():
-                                    total_att = metrics['correct'] + metrics['incorrect']
-                                    if total_att > 0:
-                                        acc = (metrics['correct'] / total_att) * 100
-                                        if acc > max_acc:
-                                            max_acc = acc
-                                            best_chap = ch
-                                        if acc < min_acc:
-                                            min_acc = acc
-                                            worst_chap = ch
-                                            
-                                st.success(f"🌟 **Good Area:** {best_chap}")
-                                st.error(f"📉 **Area of Improvement:** {worst_chap}")
-
-                            with colB:
-                                st.markdown("### Marks Distribution")
-                                df = pd.DataFrame({
-                                    "Outcome": ["Correct Selections", "Incorrect (Errors)", "Skipped"],
-                                    "Count": [log['correct'], log['incorrect'], log['skipped']]
-                                })
-                                fig = px.pie(df, values='Count', names='Outcome', color='Outcome',
-                                             color_discrete_map={"Correct Selections": "green", "Incorrect (Errors)": "red", "Skipped": "gray"})
-                                fig.update_layout(margin=dict(t=0, b=0, l=0, r=0), height=250)
-                                st.plotly_chart(fig, use_container_width=True)
-                            
-                            st.write("---")
-                            if st.button(f"Generate AI Improvement Strategy for {log['test_name']}", key=f"btn_{log['test_name']}_{log['date_str']}"):
-                                with st.spinner("AI analyzing your specific test errors..."):
-                                    insights = generate_ai_insights(log)
-                                    st.info(f"💡 **AI Growth Plan:**\n\n{insights}")
+    if st.session_state['quiz_history_log']:
+        df = pd.DataFrame(st.session_state['quiz_history_log'])
+        for sub in df['subject'].unique():
+            st.subheader(f"Subject: {sub}")
+            sub_df = df[df['subject'] == sub]
+            st.table(sub_df[['test_name', 'date', 'correct', 'incorrect', 'net']])
+            fig = px.pie(values=[sub_df['correct'].sum(), sub_df['incorrect'].sum()], names=['Correct', 'Wrong'], color_discrete_sequence=['green', 'red'])
+            st.plotly_chart(fig)
+    else: st.info("No data yet.")
 
 with tab_history:
-    st.header("🗄️ Master Question Repository")
-    st.write(f"Total entries securely logged: **{len(st.session_state['old_questions'])}**")
-    
-    if st.session_state['old_questions']:
-        for item in st.session_state['old_questions']:
-            with st.expander(f"📚 [{item['subject']}] - {item.get('chapter', 'General Review')} | {item['question'][:80]}..."):
-                st.markdown(f"**Question:** {item['question']}")
-                for k, v in item['options'].items():
-                    mark = "🟩" if k == item['correct'] else "⚪"
-                    st.write(f"{mark} {k}) {v}")
-                st.write(f"**Explanation:** {item['explanation']}")
-    else:
-        st.write("Storage registers empty.")
+    for q in reversed(st.session_state['old_questions']):
+        with st.expander(f"[{q.get('subject')}] {q['question'][:50]}..."):
+            st.write(q['question'])
+            st.write(f"Correct: {q['correct']} | Expl: {q['explanation']}")
