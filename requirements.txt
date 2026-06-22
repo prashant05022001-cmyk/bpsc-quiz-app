@@ -3,3 +3,5 @@ PyPDF2
 google-generativeai
 plotly
 pandas
+plotly
+pandas
