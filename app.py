@@ -35,6 +35,11 @@ def save_data():
     with open(DB_FILE, "w") as f:
         json.dump(data_to_save, f)
 
+# --- TIMEZONE FIX (HARDCODED TO IST) ---
+def get_ist_time():
+    """Forces the app to always use Indian Standard Time, bypassing cloud server timezones."""
+    return datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
+
 if 'db_loaded' not in st.session_state:
     saved_data = load_data()
     st.session_state['vault'] = saved_data.get('vault', {})
@@ -116,7 +121,7 @@ def build_markdown_export(quiz_pool, subject):
 st.title("📚 Civil Services Smart Quiz Dashboard")
 st.write("---")
 
-tab_quiz, tab_analytics, tab_history, tab_settings = st.tabs(["🎯 Live Simulator", "📊 Analytics Hub", "🗄️ Question Bank", "⚙️ Vault Backup"])
+tab_quiz, tab_analytics, tab_history, tab_settings = st.tabs(["🎯 Live Simulator", "📊 Analytics Hub", "🗄️ Question Bank", "⚙️ Vault Management & Backup"])
 
 with tab_quiz:
     col1, col2 = st.columns([1, 2])
@@ -176,8 +181,7 @@ with tab_quiz:
             
         select_all = st.checkbox("Select All Chapters")
         sel_chaps = chaps if select_all else st.multiselect("Select Topics:", options=chaps)
-        
-        # FEATURE 1: ADDED 'EASY' DIFFICULTY
+            
         diff = st.selectbox("Difficulty:", ["Easy", "Moderate", "Hard", "UPSC Level"])
         q_vol = st.slider("Total Questions:", 5, 25, 10)
         t_limit = st.number_input("Timer (Mins):", 1, 60, q_vol)
@@ -211,14 +215,10 @@ with tab_quiz:
                         fresh_needed = q_vol - mix_count
                         qs = generate_new_questions(sub_input, sel_chaps, diff, fresh_needed, ["Single Correct MCQ", "Statement Based"], v_text)
                     
-                    test_count = len([x for x in st.session_state['quiz_history_log'] if x.get('subject') == sub_input]) + 1
-                    test_ref_id = f"{sub_input}_Test_{test_count}"
-                    
                     if qs or mix_count > 0:
                         for q in qs:
                             q['subject'] = sub_input
                             q['difficulty'] = diff
-                            q['test_ref'] = test_ref_id
                             
                         if qs:
                             st.session_state['old_questions'].extend(qs)
@@ -306,14 +306,24 @@ with tab_quiz:
                             
                     net = (correct * config['marks']) - (wrong * config['penalty'])
                     
+                    # TEST NAME AND DATE FIX (IST)
                     test_count = len([x for x in st.session_state['quiz_history_log'] if x.get('subject') == sub_input]) + 1
-                    timestamp = datetime.datetime.now().strftime("%d %b %Y, %I:%M %p")
-                    test_name_formatted = f"{sub_input}_Test_{test_count}"
+                    ist_now = get_ist_time()
+                    timestamp_full = ist_now.strftime("%d %b %Y, %I:%M %p")
+                    timestamp_compact = ist_now.strftime("%d%b_%I%M%p")
+                    test_name_formatted = f"{sub_input}_Test_{test_count}_{timestamp_compact}"
                     
+                    # Store Test ID back to questions shown in this active quiz
+                    for q in st.session_state['active_quiz']:
+                        for oq in st.session_state['old_questions']:
+                            if oq.get('id') == q.get('id'):
+                                oq['test_ref'] = test_name_formatted
+                                break
+
                     st.session_state['quiz_history_log'].append({
                         "subject": sub_input,
                         "test_name": test_name_formatted,
-                        "date_str": timestamp,
+                        "date_str": timestamp_full,
                         "correct": correct, "incorrect": wrong, "skipped": skipped,
                         "net": round(net, 2), "total_items": len(st.session_state['active_quiz']),
                         "penalty": round((wrong * config['penalty']), 2),
@@ -360,7 +370,6 @@ with tab_analytics:
     else:
         tabs = st.tabs(["Overall Summary"] + subjects)
         
-        # FEATURE 3: MASTER DASHBOARD SUMMARY
         with tabs[0]:
             st.subheader("Global Command Center")
             df = pd.DataFrame(st.session_state['quiz_history_log'])
@@ -386,16 +395,17 @@ with tab_analytics:
                                 if ch not in agg_c_perf: agg_c_perf[ch] = {"correct": 0, "incorrect": 0}
                                 agg_c_perf[ch]["correct"] += metrics.get("correct", 0)
                                 agg_c_perf[ch]["incorrect"] += metrics.get("incorrect", 0)
-                                
-                    weak_ch = "N/A"
-                    low_acc = 101
+                    
+                    # CALCULATE TOP 3 WEAKEST CHAPTERS
+                    chap_accuracies = []
                     for ch, met in agg_c_perf.items():
                         tot = met['correct'] + met['incorrect']
                         if tot > 0:
                             acc = (met['correct'] / tot) * 100
-                            if acc < low_acc:
-                                low_acc = acc
-                                weak_ch = f"{ch} ({acc:.1f}% Accuracy)"
+                            chap_accuracies.append((ch, acc))
+                            
+                    chap_accuracies.sort(key=lambda x: x[1]) # Sort weakest first
+                    top_3_weakest = chap_accuracies[:3]
                                 
                     with st.container():
                         st.markdown(f"#### 📚 {sub}")
@@ -403,8 +413,13 @@ with tab_analytics:
                         with sc1:
                             st.write(f"**Tests Taken:** {len(sub_df)}")
                             st.write(f"**Average Score:** {sub_df['net'].mean():.2f}")
-                            if weak_ch != "N/A": st.error(f"🚨 **Critical Weakness:** {weak_ch}")
-                            else: st.info("Need more data for weakness analysis.")
+                            
+                            if top_3_weakest:
+                                st.error("🚨 **Top 3 Areas to Revise:**")
+                                for rank, (wc, wacc) in enumerate(top_3_weakest):
+                                    st.write(f"{rank+1}. **{wc}** *(Accuracy: {wacc:.1f}%)*")
+                            else:
+                                st.info("Need more data for weakness analysis.")
                         with sc2:
                             pie_df = pd.DataFrame({"Outcome": ["Correct", "Wrong", "Skipped"], "Count": [t_cor, t_wrg, t_skp]})
                             fig = px.pie(pie_df, values='Count', names='Outcome', color='Outcome', color_discrete_map={"Correct": "green", "Wrong": "red", "Skipped": "gray"})
@@ -474,13 +489,12 @@ with tab_history:
                     right_qs = [q for q in chap_qs if q.get('last_attempt_correct') == True]
                     wrong_qs = [q for q in chap_qs if q.get('last_attempt_correct') in [False, None]]
                     
-                    # FEATURE 2: QUESTION BANK TALLY AT A GLANCE
                     with st.expander(f"📖 {chap} (Total: {len(chap_qs)} | ✅ {len(right_qs)} | ❌ {len(wrong_qs)})"):
                         rt_tab, wt_tab = st.tabs([f"✅ Mastered ({len(right_qs)})", f"❌ Needs Revision ({len(wrong_qs)})"])
                         
                         with wt_tab:
                             for item in reversed(wrong_qs):
-                                st.markdown(f"**[{item.get('test_ref', 'Bank')}]** {item['question']}")
+                                st.markdown(f"**[{item.get('test_ref', 'Imported/Bank')}]** {item['question']}")
                                 for k, v in item['options'].items():
                                     mark = "🟩" if k == item['correct'] else "⚪"
                                     st.write(f"{mark} {k}) {v}")
@@ -489,15 +503,68 @@ with tab_history:
                                 
                         with rt_tab:
                             for item in reversed(right_qs):
-                                st.markdown(f"**[{item.get('test_ref', 'Bank')}]** {item['question']}")
+                                st.markdown(f"**[{item.get('test_ref', 'Imported/Bank')}]** {item['question']}")
                                 st.success(f"Correct Answer: {item['correct']} - {item['options'].get(item['correct'])}")
                                 st.write("---")
     else:
         st.write("Storage registers empty.")
 
+# --- NEW: DATA MANAGEMENT TAB ---
 with tab_settings:
-    st.header("⚙️ Database Backup & Restore")
-    st.warning("If hosting on a free cloud server, data will eventually be wiped. Use these buttons to download your database to your PC, and upload it to restore progress.")
+    st.header("⚙️ Vault Management & Backup")
+    
+    st.subheader("🗑️ Delete Data")
+    st.write("Use this section to clean up old subjects, chapters, or PDF names.")
+    
+    del_c1, del_c2, del_c3 = st.columns(3)
+    
+    with del_c1:
+        st.markdown("**1. Delete Subject**")
+        subs_to_del = list(st.session_state['vault'].keys())
+        if subs_to_del:
+            sel_sub_del = st.selectbox("Select Subject to Delete:", subs_to_del)
+            if st.button("Delete Entire Subject", type="primary"):
+                del st.session_state['vault'][sel_sub_del]
+                save_data()
+                st.success(f"Deleted {sel_sub_del}!")
+                st.rerun()
+        else:
+            st.info("No subjects to delete.")
+            
+    with del_c2:
+        st.markdown("**2. Delete Chapter**")
+        if subs_to_del:
+            sel_sub_chap = st.selectbox("Select Subject:", subs_to_del, key="del_ch_sub")
+            chaps_to_del = st.session_state['vault'].get(sel_sub_chap, {}).get("chapters", [])
+            if chaps_to_del:
+                sel_chap_del = st.selectbox("Select Chapter to Delete:", chaps_to_del)
+                if st.button("Delete Chapter"):
+                    st.session_state['vault'][sel_sub_chap]["chapters"].remove(sel_chap_del)
+                    save_data()
+                    st.success("Chapter deleted!")
+                    st.rerun()
+            else:
+                st.info("No chapters.")
+                
+    with del_c3:
+        st.markdown("**3. Delete PDF File**")
+        st.caption("*Note: Deleting a file name here cleans up your list, but to fully purge its extracted text from the AI's memory, you must delete and recreate the Subject.*")
+        if subs_to_del:
+            sel_sub_file = st.selectbox("Select Subject:", subs_to_del, key="del_f_sub")
+            files_to_del = st.session_state['vault'].get(sel_sub_file, {}).get("files", [])
+            if files_to_del:
+                sel_f_del = st.selectbox("Select PDF to Remove:", files_to_del)
+                if st.button("Remove PDF Link"):
+                    st.session_state['vault'][sel_sub_file]["files"].remove(sel_f_del)
+                    save_data()
+                    st.success("PDF reference removed!")
+                    st.rerun()
+            else:
+                st.info("No files attached.")
+
+    st.write("---")
+    st.subheader("💾 Backup & Restore")
+    st.warning("If hosting on a free cloud server, data will eventually be wiped. Download your database frequently.")
     col_dl, col_ul = st.columns(2)
     with col_dl:
         if os.path.exists(DB_FILE):
