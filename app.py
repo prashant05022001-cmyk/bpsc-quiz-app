@@ -91,7 +91,7 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, vau
     Elite Civil Services Examiner Mode. Generate {count} distinct questions for Subject: {subject} | Chapters: {', '.join(chapters)}.
     Difficulty: {difficulty}. Formats: {', '.join(item_types)}. Source Material context: {relevant_context}
     Return JSON array exactly:
-    [ {{"id": {random.randint(10000,99999)}, "type": "MCQ", "chapter": "{chapters[0]}", "question": "Q?", "options": {{"A": "1", "B": "2", "C": "3", "D": "4"}}, "correct": "A", "explanation": "Exp.", "extra_info": "Fact."}} ]
+    [ {{"id": {random.randint(10000,99999)}, "type": "MCQ", "chapter": "{chapters[0] if chapters else 'General'}", "question": "Q?", "options": {{"A": "1", "B": "2", "C": "3", "D": "4"}}, "correct": "A", "explanation": "Exp.", "extra_info": "Fact."}} ]
     """
     for attempt in range(retries):
         try:
@@ -166,7 +166,8 @@ with tab_quiz:
                         st.session_state['vault'][sub_input]["chapters"] = list(set(st.session_state['vault'][sub_input]["chapters"] + new_c))
                         save_data()
                         st.rerun()
-st.header("2. Build Custom Deck")
+
+        st.header("2. Build Custom Deck")
         if sub_input == "All Subjects":
             chaps = []
             for s in existing_subs: chaps.extend(st.session_state['vault'][s].get("chapters", []))
@@ -187,7 +188,6 @@ st.header("2. Build Custom Deck")
         with col_m2:
             neg_mark_val = st.number_input("Negative Penalty:", min_value=0.0, max_value=5.0, value=0.66, step=0.01)
 
-        # THE NEW OFFLINE TOGGLE
         st.write("---")
         force_revision = st.checkbox("🔄 Revision Mode (Bypass AI & Quotas. Use Question Bank Only)", value=False)
 
@@ -199,13 +199,12 @@ st.header("2. Build Custom Deck")
                         
                     matching_old = [q for q in st.session_state['old_questions'] if q.get('chapter') in sel_chaps]
                     
-                    # LOGIC SPLIT: Offline vs AI Mode
                     if force_revision:
                         if len(matching_old) < q_vol:
                             st.warning(f"You only have {len(matching_old)} questions saved for these topics. Building test with available questions.")
                         mix_count = min(len(matching_old), q_vol)
                         fresh_needed = 0
-                        qs = [] # No AI call made!
+                        qs = [] 
                     else:
                         mix_count = min(len(matching_old), max(1, q_vol // 2)) if matching_old else 0
                         fresh_needed = q_vol - mix_count
@@ -238,6 +237,7 @@ st.header("2. Build Custom Deck")
                         st.error("No questions available. Either generate new ones with AI (check your quota) or select chapters you have previously tested.")
             else:
                 st.error("Please select at least one chapter.")
+
     with col2:
         st.header("3. Examination Chamber")
         if st.session_state['active_quiz']:
@@ -298,7 +298,6 @@ st.header("2. Build Custom Deck")
                             c_perf[qc]["incorrect"] += 1
                             wrong_details.append({"chapter": qc, "question": q['question'], "explanation": q['explanation']})
                             
-                        # Update the master bank with Right/Wrong attempt history
                         for oq in st.session_state['old_questions']:
                             if oq.get('id') == q.get('id'):
                                 oq['last_attempt_correct'] = is_correct
@@ -307,7 +306,6 @@ st.header("2. Build Custom Deck")
                     net = (correct * config['marks']) - (wrong * config['penalty'])
                     
                     test_count = len([x for x in st.session_state['quiz_history_log'] if x.get('subject') == sub_input]) + 1
-                    # EXACT TIMESTAMP FORMAT APPLIED HERE
                     timestamp = datetime.datetime.now().strftime("%d %b %Y, %I:%M %p")
                     test_name_formatted = f"{sub_input}_Test_{test_count}"
                     
@@ -375,7 +373,6 @@ with tab_analytics:
                 else:
                     for log in reversed(logs):
                         date_display = log.get('date_str', 'Unknown Date')
-                        # FIXED: TEST NAME AND DATE FORMAT
                         with st.expander(f"📋 {log.get('test_name')} - {date_display}", expanded=False):
                             cA, cB = st.columns([1, 1])
                             with cA:
@@ -398,7 +395,6 @@ with tab_analytics:
                                     st.success(f"🌟 **Strong Area:** {b_c}")
                                     st.error(f"📉 **Needs Work:** {w_c}")
                                     
-                                    # FEATURE 1: INSTANT EXPLANATIONS FOR WEAKEST CHAPTER
                                     if w_c != "N/A":
                                         wrong_in_worst = [wq for wq in log.get('wrong_details', []) if wq['chapter'] == w_c]
                                         if wrong_in_worst:
@@ -425,13 +421,12 @@ with tab_history:
                 sub_qs = [q for q in st.session_state['old_questions'] if q.get('subject') == s_tab]
                 chapters_in_sub = list(set([q.get('chapter', 'General Review') for q in sub_qs]))
                 
-                # FEATURE 2: RIGHT AND WRONG SEGREGATION
                 st.write(f"**Total Database Questions for {s_tab}: {len(sub_qs)}**")
                 
                 for chap in sorted(chapters_in_sub):
                     chap_qs = [q for q in sub_qs if q.get('chapter', 'General Review') == chap]
                     right_qs = [q for q in chap_qs if q.get('last_attempt_correct') == True]
-                    wrong_qs = [q for q in chap_qs if q.get('last_attempt_correct') in [False, None]] # Captures wrong and unattempted
+                    wrong_qs = [q for q in chap_qs if q.get('last_attempt_correct') in [False, None]]
                     
                     with st.expander(f"📖 Chapter: {chap} ({len(chap_qs)} questions)"):
                         rt_tab, wt_tab = st.tabs([f"✅ Mastered ({len(right_qs)})", f"❌ Needs Revision ({len(wrong_qs)})"])
