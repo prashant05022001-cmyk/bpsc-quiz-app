@@ -8,25 +8,57 @@ import io
 import datetime
 import pandas as pd
 import plotly.express as px
+import os
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Civil Services Smart Quiz Dashboard", page_icon="📚", layout="wide")
 
-# --- INITIALIZE COGNITIVE DATA DEKS ---
-if 'vault' not in st.session_state:
-    st.session_state['vault'] = {
-        "History": {"chapters": ["Revolt of 1857", "Socio-Religious Reform Movements", "Advent of Europeans", "Indian National Congress"], "content": ""},
-        "Polity": {"chapters": ["Fundamental Rights", "Preamble & Historical Background", "Directive Principles of State Policy"], "content": ""},
-        "Economics": {"chapters": ["National Income Accounting", "Inflation & Monetary Policy", "Budgeting and Fiscal Policy"], "content": ""}
+# --- PERMANENT STORAGE DATABASE SYSTEM ---
+DB_FILE = "database.json"
+
+def load_data():
+    """Reads the permanent database file if it exists."""
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, "r") as f:
+                return json.load(f)
+        except Exception:
+            pass # If file is corrupted, fall back to default
+            
+    # Default starter data if no database exists yet
+    return {
+        "vault": {
+            "History": {"chapters": ["Revolt of 1857", "Socio-Religious Reform Movements", "Advent of Europeans", "Indian National Congress"], "content": ""},
+            "Polity": {"chapters": ["Fundamental Rights", "Preamble & Historical Background", "Directive Principles of State Policy"], "content": ""},
+            "Economics": {"chapters": ["National Income Accounting", "Inflation & Monetary Policy", "Budgeting and Fiscal Policy"], "content": ""}
+        },
+        "old_questions": [],
+        "quiz_history_log": []
     }
-if 'old_questions' not in st.session_state:
-    st.session_state['old_questions'] = []
+
+def save_data():
+    """Writes the current session state to the permanent database file."""
+    data_to_save = {
+        "vault": st.session_state['vault'],
+        "old_questions": st.session_state['old_questions'],
+        "quiz_history_log": st.session_state['quiz_history_log']
+    }
+    with open(DB_FILE, "w") as f:
+        json.dump(data_to_save, f)
+
+# --- INITIALIZE COGNITIVE DATA DEKS (FROM HARD DRIVE) ---
+if 'db_loaded' not in st.session_state:
+    saved_data = load_data()
+    st.session_state['vault'] = saved_data.get('vault', {})
+    st.session_state['old_questions'] = saved_data.get('old_questions', [])
+    st.session_state['quiz_history_log'] = saved_data.get('quiz_history_log', [])
+    st.session_state['db_loaded'] = True
+
+# Temporary session variables (These reset on refresh, which is normal for mid-quiz states)
 if 'active_quiz' not in st.session_state:
     st.session_state['active_quiz'] = None
 if 'quiz_submitted' not in st.session_state:
     st.session_state['quiz_submitted'] = False
-if 'quiz_history_log' not in st.session_state:
-    st.session_state['quiz_history_log'] = [] 
 
 # --- API CONFIGURATION ---
 try:
@@ -59,7 +91,7 @@ def get_chapters_from_ai(text, subject_name):
     try:
         response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
         return json.loads(response.text)
-    except Exception as e:
+    except Exception:
         return []
 
 def generate_new_questions(subject, chapters, difficulty, count, item_types, context_text):
@@ -140,6 +172,7 @@ with tab_quiz:
             sub_input = st.text_input("Enter New Subject Name:", placeholder="e.g., Geography")
             if sub_input and sub_input not in st.session_state['vault']:
                 st.session_state['vault'][sub_input] = {"chapters": [], "content": ""}
+                save_data() # Save immediately when a new subject is made
         
         st.write("---")
         st.subheader("Add Content to Vault")
@@ -149,7 +182,7 @@ with tab_quiz:
             uploaded_files = st.file_uploader("Upload PDFs (Saved permanently to vault):", type="pdf", accept_multiple_files=True)
             if st.button("Extract & Save to Vault"):
                 if sub_input and uploaded_files:
-                    with st.spinner("Decoding and permanently storing content... (Adding safe delays to prevent Google errors)"):
+                    with st.spinner("Decoding and permanently storing content..."):
                         for f in uploaded_files:
                             raw_text = extract_index_text(f.getvalue())
                             extracted_chaps = get_chapters_from_ai(raw_text, sub_input)
@@ -159,11 +192,10 @@ with tab_quiz:
                                 st.session_state['vault'][sub_input]["chapters"] = list(set(current_chaps + extracted_chaps))
                             
                             st.session_state['vault'][sub_input]["content"] += "\n" + raw_text
-                            
-                            # THE 4-SECOND SPEED LIMIT FIX IS RIGHT HERE:
                             time.sleep(4)
                             
-                        st.success(f"Chapters and PDF Content safely stored in '{sub_input}' vault!")
+                        save_data() # Save to file after uploading
+                        st.success(f"Chapters and PDF Content permanently stored in '{sub_input}' vault!")
                         st.rerun()
                 else:
                     st.error("Ensure Subject Name is established and files are queued.")
@@ -175,6 +207,8 @@ with tab_quiz:
                     new_chaps = [line.strip() for line in manual_chapters.split('\n') if line.strip()]
                     current_chaps = st.session_state['vault'][sub_input]["chapters"]
                     st.session_state['vault'][sub_input]["chapters"] = list(set(current_chaps + new_chaps))
+                    
+                    save_data() # Save to file after manual entry
                     st.success(f"Added {len(new_chaps)} chapters to {sub_input}!")
                     st.rerun()
 
@@ -220,6 +254,7 @@ with tab_quiz:
                             q['difficulty'] = diff_level
                         
                         st.session_state['old_questions'].extend(fresh_qs)
+                        save_data() # Save newly generated questions permanently
                         
                         active_pool = fresh_qs
                         if mix_old_count > 0:
@@ -310,6 +345,8 @@ with tab_quiz:
                         "total_items": len(st.session_state['active_quiz']),
                         "chapter_perf": chapter_perf
                     })
+                    
+                    save_data() # Save the completed test results permanently
                     st.rerun()
             else:
                 st.success("📝 Performance Score Card Generated Successfully")
