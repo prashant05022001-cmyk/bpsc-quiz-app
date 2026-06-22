@@ -1,82 +1,240 @@
 import streamlit as st
 import PyPDF2
 import google.generativeai as genai
+import json
+import random
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="BPSC Smart Quiz", page_icon="📚", layout="wide")
 
+# --- INITIALIZE MEMORY BANKS ---
+if 'current_chapters' not in st.session_state:
+    st.session_state['current_chapters'] = []
+if 'current_subject' not in st.session_state:
+    st.session_state['current_subject'] = ""
+if 'old_questions' not in st.session_state:
+    st.session_state['old_questions'] = []
+if 'active_quiz' not in st.session_state:
+    st.session_state['active_quiz'] = None
+if 'quiz_submitted' not in st.session_state:
+    st.session_state['quiz_submitted'] = False
+
 # --- API CONFIGURATION ---
-# This securely pulls your API key from Streamlit's Advanced Settings (Secrets)
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
+    # Using gemini-1.5-flash for speed and structured outputs
     model = genai.GenerativeModel('gemini-1.5-flash')
 except Exception as e:
-    st.warning("API Key not found. Please add GEMINI_API_KEY to your Streamlit Secrets.")
+    st.warning("API Key not found or invalid. Please add GEMINI_API_KEY to your Streamlit Secrets.")
 
-# --- FUNCTIONS ---
-def extract_index_text(pdf_file, num_pages=15):
-    """Extracts text from the first few pages to find the Table of Contents."""
-    pdf_reader = PyPDF2.PdfReader(pdf_file)
-    text = ""
-    # Only read the first 15 pages to save AI processing time and focus on the index
-    pages_to_read = min(len(pdf_reader.pages), num_pages)
-    for page_num in range(pages_to_read):
-        page = pdf_reader.pages[page_num]
-        text += page.extract_text()
-    return text
+# --- HELPERS ---
+def extract_index_text(pdf_file, num_pages=12):
+    try:
+        pdf_reader = PyPDF2.PdfReader(pdf_file)
+        text = ""
+        pages_to_read = min(len(pdf_reader.pages), num_pages)
+        for page_num in range(pages_to_read):
+            text += pdf_reader.pages[page_num].extract_text() or ""
+        return text
+    except:
+        return ""
 
 def get_chapters_from_ai(text, subject_name):
-    """Asks Gemini to find chapters in the extracted text."""
     prompt = f"""
-    You are a helpful assistant for a BPSC exam aspirant. 
-    I am providing you the first few pages of a textbook for the subject: {subject_name}.
-    Please find the Table of Contents or Index, and list all the chapter names.
-    Return ONLY a clean, numbered list of the chapter names. Do not include page numbers or extra chat text.
-    
-    Text:
-    {text}
+    Analyze this index text from a {subject_name} textbook. 
+    Extract a clean list of individual chapter names.
+    Return ONLY a valid JSON array of strings containing the chapter names. Do not include markdown blocks or any conversational text.
+    Example output format: ["Chapter 1: Arrival of British", "Chapter 2: Revolt of 1857"]
+    Text: {text}
     """
-    response = model.generate_content(prompt)
-    return response.text
+    try:
+        response = model.generate_content(prompt)
+        # Clean potential markdown wrapping if AI adds it
+        clean_text = response.text.replace("```json", "").replace("```", "").strip()
+        return json.loads(clean_text)
+    except:
+        return ["General Chapter 1", "General Chapter 2"]
 
-# --- APP LAYOUT & UI ---
-st.title("📚 BPSC Smart Quiz App")
-st.markdown("Upload your study materials and generate exam-level quizzes.")
+def generate_new_questions(subject, chapter, difficulty, count):
+    prompt = f"""
+    You are an expert examiner for BPSC, UPSC, and Bihar state competitive exams.
+    Generate exactly {count} distinct multiple-choice questions for:
+    Subject: {subject}
+    Chapter/Topic: {chapter}
+    Difficulty Level: {difficulty}
 
-st.divider()
+    Strict Criteria:
+    1. Tailor the standard to match real competitive exams (Easy=SSC CGL, Moderate=BPSC standard, Hard=UPSC Prelims/Tough BPSC, Very Hard=Deep conceptual analytical statements).
+    2. Provide 4 options labeled A, B, C, D.
+    3. Provide an absolute detailed explanation for the solution. Include a distinct 'Extra Value / PYQ Reference' point summarizing related concepts or factual trivia historically targeted in state exams.
+    4. Return your output strictly as a JSON array matching this exact format:
+    [
+      {{
+        "id": {random.randint(1000, 9999)},
+        "question": "Question text here?",
+        "options": {{"A": "Option A text", "B": "Option B text", "C": "Option C text", "D": "Option D text"}},
+        "correct": "A",
+        "explanation": "Detailed explanation text here.",
+        "extra_info": "Extra historical trivia or PYQ context here."
+      }}
+    ]
+    Do not wrap it in anything else except a clean JSON string.
+    """
+    try:
+        response = model.generate_content(prompt)
+        clean_text = response.text.replace("```json", "").replace("```", "").strip()
+        return json.loads(clean_text)
+    except Exception as e:
+        st.error(f"Error generating questions: {e}")
+        return []
 
-# Two-column layout
-col1, col2 = st.columns([1, 2])
+# --- APP LAYOUT ---
+st.title("📚 BPSC Smart Quiz Dashboard")
+st.markdown("Your custom-tailored preparation engine designed for iPad & Desktop.")
+st.write("---")
 
-with col1:
-    st.subheader("1. Upload Study Material")
-    subject_name = st.text_input("Enter Subject Name (e.g., Modern History, Bihar Special):")
-    uploaded_pdfs = st.file_uploader("Upload PDF Documents", type="pdf", accept_multiple_files=True)
+# Tab structure to split Setup and Revision
+tab_quiz, tab_history = st.tabs(["🎯 Quiz Playground", "🗄️ Old Generated Questions (Revision)"])
+
+with tab_quiz:
+    col_setup, col_display = st.columns([1, 2])
     
-    if st.button("Process PDFs & Extract Chapters"):
-        if not subject_name:
-            st.error("Please enter a subject name first.")
-        elif not uploaded_pdfs:
-            st.error("Please upload at least one PDF.")
-        else:
-            with st.spinner("Reading PDFs and identifying chapters..."):
-                all_chapters = ""
-                for pdf in uploaded_pdfs:
-                    # Extract text from the start of the book
-                    raw_text = extract_index_text(pdf)
-                    # Ask AI to parse the chapters
-                    chapters = get_chapters_from_ai(raw_text, subject_name)
-                    all_chapters += f"**From {pdf.name}:**\n{chapters}\n\n"
-                
-                # Save the identified chapters to the app's current session memory
-                st.session_state['current_chapters'] = all_chapters
-                st.session_state['current_subject'] = subject_name
-                st.success("Chapters extracted successfully!")
+    with col_setup:
+        st.header("1. Sync Materials")
+        sub_input = st.text_input("Subject Name:", value=st.session_state['current_subject'], placeholder="e.g., Indian Polity")
+        uploaded_files = st.file_uploader("Upload Chapter/Book PDFs:", type="pdf", accept_multiple_files=True)
+        
+        if st.button("Extract Chapters"):
+            if sub_input and uploaded_files:
+                with st.spinner("Processing index data..."):
+                    combined_chapters = []
+                    for f in uploaded_files:
+                        raw_index = extract_index_text(f)
+                        chapters = get_chapters_from_ai(raw_index, sub_input)
+                        combined_chapters.extend(chapters)
+                    st.session_state['current_chapters'] = list(set(combined_chapters))
+                    st.session_state['current_subject'] = sub_input
+                    st.success(f"Loaded {len(st.session_state['current_chapters'])} chapters!")
+            else:
+                st.error("Please specify a Subject and upload at least one PDF.")
+        
+        st.write("---")
+        st.header("2. Configure Quiz")
+        
+        # Chapter Selection Dropdown
+        selected_ch = st.selectbox("Select Target Chapter:", options=st.session_state['current_chapters'] if st.session_state['current_chapters'] else ["Upload a file first"])
+        
+        # Difficulty & Volume
+        diff_level = st.selectbox("Difficulty Level:", ["Easy", "Moderate", "Hard", "Very Hard"])
+        q_count = st.slider("Number of Questions:", min_value=10, max_value=20, value=10)
+        
+        if st.button("Generate Mixed Quiz 🔥"):
+            if not st.session_state['current_chapters']:
+                st.error("Please upload materials and extract chapters first.")
+            else:
+                with st.spinner("Assembling custom quiz template..."):
+                    # Pull relevant older questions for rotation mixing if available
+                    matching_old = [q for q in st.session_state['old_questions'] if q['chapter'] == selected_ch]
+                    
+                    mix_old_count = min(len(matching_old), random.randint(2, 5)) if matching_old else 0
+                    fresh_needed = q_count - mix_old_count
+                    
+                    # Fetch fresh questions from AI
+                    fresh_qs = generate_new_questions(st.session_state['current_subject'], selected_ch, diff_level, fresh_needed)
+                    
+                    # Label fresh items with tracking details
+                    for q in fresh_qs:
+                        q['subject'] = st.session_state['current_subject']
+                        q['chapter'] = selected_ch
+                        q['difficulty'] = diff_level
+                    
+                    # Save fresh items permanently to the history storage bank
+                    st.session_state['old_questions'].extend(fresh_qs)
+                    
+                    # Blend the active quiz pool
+                    active_pool = fresh_qs
+                    if mix_old_count > 0:
+                        active_pool += random.sample(matching_old, mix_old_count)
+                    random.shuffle(active_pool)
+                    
+                    st.session_state['active_quiz'] = active_pool
+                    st.session_state['quiz_submitted'] = False
+                    st.rerun()
 
-with col2:
-    st.subheader("2. Identified Chapters")
-    if 'current_chapters' in st.session_state:
-        st.info(f"**Subject:** {st.session_state['current_subject']}")
-        st.write(st.session_state['current_chapters'])
+    with col_display:
+        st.header("3. Active Examination Session")
+        
+        if st.session_state['active_quiz']:
+            st.info(f"📍 **Subject:** {st.session_state['current_subject']} | **Chapter:** {selected_ch}")
+            
+            user_answers = {}
+            
+            # Draw each question dynamically
+            for idx, q in enumerate(st.session_state['active_quiz']):
+                st.markdown(f"#### **Q{idx+1}. {q['question']}**")
+                
+                # Setup options layout
+                opts = q['options']
+                formatted_opts = [f"{k}) {v}" for k, v in opts.items()]
+                
+                # Checkbox selection
+                user_sel = st.radio(
+                    f"Choose your answer for Q{idx+1}:", 
+                    options=["Not Answered"] + formatted_opts,
+                    key=f"q_{q['id']}_{idx}",
+                    label_visibility="collapsed"
+                )
+                user_answers[idx] = user_sel.split(")")[0] if ")" in user_sel else None
+                st.write("")
+
+            # Action Submission Bar
+            if not st.session_state['quiz_submitted']:
+                if st.button("Submit Answers Evaluation"):
+                    st.session_state['quiz_submitted'] = True
+                    st.rerun()
+            else:
+                st.success("Evaluation Report Generated below:")
+                
+                # Review Layout with Highlighting
+                for idx, q in enumerate(st.session_state['active_quiz']):
+                    st.markdown(f"**Question {idx+1}:** {q['question']}")
+                    
+                    correct_key = q['correct']
+                    user_key = user_answers[idx]
+                    
+                    # Custom styled display boxes for ipad compliance
+                    for k, v in q['options'].items():
+                        if k == correct_key:
+                            st.markdown(f"🟩 **{k}) {v} (Correct Answer)**")
+                        elif k == user_key and user_key != correct_key:
+                            st.markdown(f"🟥 **{k}) {v} (Your Selection - Wrong)**")
+                        else:
+                            st.markdown(f"⚪ {k}) {v}")
+                    
+                    # Detailed Explanations
+                    with st.expander("👁️ View Solutions & Extra Value Points"):
+                        st.write(f"**Explanation:** {q['explanation']}")
+                        st.markdown(f"💡 *Extra Value / PYQ Note:* {q['extra_info']}")
+                
+                if st.button("Clear and Start New Session"):
+                    st.session_state['active_quiz'] = None
+                    st.session_state['quiz_submitted'] = False
+                    st.rerun()
+        else:
+            st.write("Configure settings in the left panel and click 'Generate Mixed Quiz' to begin.")
+
+with tab_history:
+    st.header("🗄️ Question History Vault")
+    st.write(f"Total historical questions logged in session cache: **{len(st.session_state['old_questions'])}**")
+    
+    if st.session_state['old_questions']:
+        for item in st.session_state['old_questions']:
+            with st.expander(f"📚 [{item['subject']}] {item['chapter']} ({item['difficulty']}) - {item['question'][:60]}..."):
+                st.markdown(f"**Full Question:** {item['question']}")
+                for k, v in item['options'].items():
+                    mark = "🟩" if k == item['correct'] else "⚪"
+                    st.write(f"{mark} {k}) {v}")
+                st.write(f"**Solution:** {item['explanation']}")
+                st.info(f"PYQ Fact Check: {item['extra_info']}")
     else:
-        st.write("Upload a PDF and click process to see chapters here.")
+        st.write("No questions recorded yet. Newly generated questions will appear here automatically for permanent study reference.")
