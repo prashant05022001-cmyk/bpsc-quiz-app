@@ -83,12 +83,13 @@ def get_chapters_from_ai(text, subject_name, retries=3):
     prompt = f"Extract chapter names from this {subject_name} index. Return ONLY a JSON array of strings. No markdown."
     for attempt in range(retries):
         try:
-            # INCREASED TO 20,000 CHARACTERS TO REACH DEEP TABLE OF CONTENTS
             response = model.generate_content(prompt + f"\nText: {text[:20000]}", generation_config={"response_mime_type": "application/json"})
             raw_text = response.text.strip()
-            if raw_text.startswith("```json"): raw_text = raw_text[7:-3].strip()
-            elif raw_text.startswith("
-```"): raw_text = raw_text[3:-3].strip()
+            # FIXED: Repaired broken syntax checking clean-up loops safely
+            if raw_text.startswith("```json"): 
+                raw_text = raw_text[7:-3].strip()
+            elif raw_text.startswith("```"): 
+                raw_text = raw_text[3:-3].strip()
             return json.loads(raw_text)
         except Exception as e:
             if "429" in str(e) or "Quota" in str(e): time.sleep(15)
@@ -177,14 +178,12 @@ with tab_quiz:
                             for f in up_files:
                                 t = extract_index_text(f.getvalue())
                                 
-                                # UPGRADED DIAGNOSTICS: Check if PDF is a scanned image
                                 if len(t.strip()) < 50:
                                     st.error(f"❌ '{f.name}' appears to be a scanned image PDF. The AI cannot read text from photos. Please upload a digital text PDF.")
                                     continue
                                 
                                 ch = get_chapters_from_ai(t, sub_input)
                                 
-                                # UPGRADED DIAGNOSTICS: Show exactly what was added
                                 if not ch:
                                     st.warning(f"⚠️ AI couldn't detect the index in '{f.name}'. The text was saved for quizzes, but you must type its chapters manually in the 'Manual Topics' tab.")
                                 else:
@@ -203,7 +202,7 @@ with tab_quiz:
                                 
                             st.session_state['vault'][sub_input]["files"] = list(set(st.session_state['vault'][sub_input]["files"]))
                             save_data()
-                            time.sleep(3) # Pauses so you can actually read the success/error messages before refreshing
+                            time.sleep(3)
                             st.rerun()
                             
             with opt2:
