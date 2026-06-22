@@ -3,7 +3,6 @@ import PyPDF2
 import google.generativeai as genai
 import json
 import random
-import re
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="BPSC Smart Quiz", page_icon="📚", layout="wide")
@@ -43,28 +42,19 @@ def extract_index_text(pdf_file, num_pages=20):
 
 def get_chapters_from_ai(text, subject_name):
     prompt = f"""
-    Analyze this text from a {subject_name} book/magazine index.
-    Extract all the chapter or topic names.
-    Return them as a plain list, with each chapter on a new line. 
-    Do not write any introduction, markdown, or explanation. Just the list of topics.
-    
-    Text:
-    {text}
+    Analyze this text from a {subject_name} book index. Extract all the chapter or topic names.
+    Return ONLY a JSON array of strings. Example: ["Topic 1", "Topic 2", "Topic 3"]
+    Text: {text}
     """
     try:
-        response = model.generate_content(prompt)
-        # Plain text parsing (Unbreakable)
-        lines = response.text.split("\n")
-        chapters = []
-        for line in lines:
-            # Clean off bullets, dashes, and numbers
-            clean_line = line.strip().lstrip("-*•0123456789. ").strip()
-            # Ignore empty lines or conversational AI apologies
-            if clean_line and len(clean_line) > 3 and not clean_line.lower().startswith("here is") and not clean_line.lower().startswith("these are"):
-                chapters.append(clean_line)
-        return chapters if chapters else ["General Review Topic"]
+        # STRICT JSON MODE: Forces the AI to never make a formatting mistake
+        response = model.generate_content(
+            prompt,
+            generation_config={"response_mime_type": "application/json"}
+        )
+        return json.loads(response.text)
     except Exception as e:
-        return ["General Review Topic"]
+        return []
 
 def generate_new_questions(subject, chapter, difficulty, count):
     prompt = f"""
@@ -73,12 +63,12 @@ def generate_new_questions(subject, chapter, difficulty, count):
     Chapter: {chapter}
     Difficulty Level: {difficulty}
 
-    Return your output strictly as a JSON array matching this exact format, with NO extra conversational text at the beginning or end:
+    Return a JSON array matching this EXACT schema:
     [
       {{
         "id": {random.randint(1000, 9999)},
         "question": "Question text here?",
-        "options": {{"A": "Option A", "B": "Option B", "C": "Option C", "D": "Option D"}},
+        "options": {{"A": "Option A text", "B": "Option B text", "C": "Option C text", "D": "Option D text"}},
         "correct": "A",
         "explanation": "Detailed explanation.",
         "extra_info": "Extra historical trivia."
@@ -86,10 +76,11 @@ def generate_new_questions(subject, chapter, difficulty, count):
     ]
     """
     try:
-        response = model.generate_content(prompt)
-        match = re.search(r'\[.*\]', response.text, re.DOTALL)
-        if match:
-            return json.loads(match.group(0))
+        # STRICT JSON MODE
+        response = model.generate_content(
+            prompt,
+            generation_config={"response_mime_type": "application/json"}
+        )
         return json.loads(response.text)
     except Exception as e:
         return []
@@ -118,11 +109,11 @@ with tab_quiz:
                     combined_chapters = []
                     for f in uploaded_files:
                         raw_index = extract_index_text(f)
-                        if len(raw_index) < 50:
-                            st.warning(f"⚠️ We could not read text from '{f.name}'. It might be a scanned image or heavily formatted. Please use Option B below.")
-                            continue
                         chapters = get_chapters_from_ai(raw_index, sub_input)
-                        combined_chapters.extend(chapters)
+                        if chapters:
+                            combined_chapters.extend(chapters)
+                        else:
+                            st.error(f"❌ Failed to read '{f.name}'. The formatting is too complex. Please use Option B below.")
                     
                     if combined_chapters:
                         st.session_state['current_chapters'] = list(set(combined_chapters))
@@ -132,8 +123,8 @@ with tab_quiz:
                 st.error("Please specify a Subject and upload at least one PDF.")
                 
         st.write("---")
-        st.subheader("Option B: Enter Manually (Fallback)")
-        st.markdown("*Use this if your PDF is too large or fails to extract.*")
+        st.subheader("Option B: Enter Manually (For Heavy PDFs)")
+        st.markdown("*Use this for heavy files like Vision IAS magazines where AI extraction fails.*")
         manual_chapters = st.text_area("Paste chapter names here (one per line):", placeholder="Advent of Europeans\nRevolt of 1857\nIndian National Congress")
         
         if st.button("Save Manual Chapters"):
@@ -148,15 +139,15 @@ with tab_quiz:
         st.write("---")
         st.header("2. Configure Quiz")
         
-        selected_ch = st.selectbox("Select Target Chapter:", options=st.session_state['current_chapters'] if st.session_state['current_chapters'] else ["Upload or type chapters first"])
+        selected_ch = st.selectbox("Select Target Chapter:", options=st.session_state['current_chapters'] if st.session_state['current_chapters'] else ["Add chapters first"])
         diff_level = st.selectbox("Difficulty Level:", ["Easy", "Moderate", "Hard", "Very Hard"])
         q_count = st.slider("Number of Questions:", min_value=10, max_value=20, value=10)
         
         if st.button("Generate Mixed Quiz 🔥"):
-            if not st.session_state['current_chapters'] or selected_ch == "Upload or type chapters first":
+            if not st.session_state['current_chapters'] or selected_ch == "Add chapters first":
                 st.error("Please add chapters first using Option A or Option B.")
             else:
-                with st.spinner(f"Assembling custom {diff_level} quiz... This takes about 15 seconds..."):
+                with st.spinner(f"Assembling custom {diff_level} quiz..."):
                     matching_old = [q for q in st.session_state['old_questions'] if q['chapter'] == selected_ch]
                     mix_old_count = min(len(matching_old), random.randint(2, 5)) if matching_old else 0
                     fresh_needed = q_count - mix_old_count
@@ -164,7 +155,7 @@ with tab_quiz:
                     fresh_qs = generate_new_questions(st.session_state['current_subject'], selected_ch, diff_level, fresh_needed)
                     
                     if not fresh_qs:
-                        st.error("🚨 The AI failed to format the questions correctly. Please click 'Generate Mixed Quiz' again.")
+                        st.error("🚨 Network error. Please click 'Generate Mixed Quiz' again.")
                     else:
                         for q in fresh_qs:
                             q['subject'] = st.session_state['current_subject']
