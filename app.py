@@ -42,33 +42,32 @@ def extract_index_text(pdf_file, num_pages=20):
 
 def get_chapters_from_ai(text, subject_name):
     prompt = f"""
-    Analyze this text from a {subject_name} book index. Extract all the chapter or topic names.
-    Return ONLY a JSON array of strings. Example: ["Topic 1", "Topic 2", "Topic 3"]
+    Analyze this text from a {subject_name} book/magazine index. Extract the chapter or topic names.
+    Return them as a plain list, with each chapter on a new line. Do not write any introduction.
     Text: {text}
     """
     try:
-        # STRICT JSON MODE: Forces the AI to never make a formatting mistake
-        response = model.generate_content(
-            prompt,
-            generation_config={"response_mime_type": "application/json"}
-        )
-        return json.loads(response.text)
+        response = model.generate_content(prompt)
+        lines = response.text.split("\n")
+        chapters = [line.strip().lstrip("-*•0123456789. ").strip() for line in lines if len(line.strip()) > 3]
+        return chapters if chapters else ["General Review Topic"]
     except Exception as e:
-        return []
+        st.error(f"AI Reading Error: {str(e)}")
+        return ["General Review Topic"]
 
 def generate_new_questions(subject, chapter, difficulty, count):
     prompt = f"""
-    You are an expert examiner for competitive exams. Generate {count} distinct multiple-choice questions for:
+    You are an expert examiner for competitive exams. Generate exactly {count} distinct multiple-choice questions for:
     Subject: {subject}
     Chapter: {chapter}
     Difficulty Level: {difficulty}
 
-    Return a JSON array matching this EXACT schema:
+    You MUST return ONLY a JSON array. Do NOT wrap it in markdown blockquotes like ```json.
     [
       {{
         "id": {random.randint(1000, 9999)},
         "question": "Question text here?",
-        "options": {{"A": "Option A text", "B": "Option B text", "C": "Option C text", "D": "Option D text"}},
+        "options": {{"A": "Option A", "B": "Option B", "C": "Option C", "D": "Option D"}},
         "correct": "A",
         "explanation": "Detailed explanation.",
         "extra_info": "Extra historical trivia."
@@ -76,13 +75,22 @@ def generate_new_questions(subject, chapter, difficulty, count):
     ]
     """
     try:
-        # STRICT JSON MODE
-        response = model.generate_content(
-            prompt,
-            generation_config={"response_mime_type": "application/json"}
-        )
-        return json.loads(response.text)
+        response = model.generate_content(prompt)
+        text = response.text
+        
+        # Robust JSON extraction
+        start_idx = text.find('[')
+        end_idx = text.rfind(']') + 1
+        
+        if start_idx != -1 and end_idx != 0:
+            clean_json = text[start_idx:end_idx]
+            return json.loads(clean_json)
+        else:
+            return json.loads(text)
+            
     except Exception as e:
+        # THIS IS THE X-RAY: It will print the exact reason Google rejected the request
+        st.error(f"🚨 Google AI Error Details: {str(e)}")
         return []
 
 # --- APP LAYOUT ---
@@ -110,10 +118,7 @@ with tab_quiz:
                     for f in uploaded_files:
                         raw_index = extract_index_text(f)
                         chapters = get_chapters_from_ai(raw_index, sub_input)
-                        if chapters:
-                            combined_chapters.extend(chapters)
-                        else:
-                            st.error(f"❌ Failed to read '{f.name}'. The formatting is too complex. Please use Option B below.")
+                        combined_chapters.extend(chapters)
                     
                     if combined_chapters:
                         st.session_state['current_chapters'] = list(set(combined_chapters))
@@ -124,8 +129,7 @@ with tab_quiz:
                 
         st.write("---")
         st.subheader("Option B: Enter Manually (For Heavy PDFs)")
-        st.markdown("*Use this for heavy files like Vision IAS magazines where AI extraction fails.*")
-        manual_chapters = st.text_area("Paste chapter names here (one per line):", placeholder="Advent of Europeans\nRevolt of 1857\nIndian National Congress")
+        manual_chapters = st.text_area("Paste chapter names here (one per line):", placeholder="Advent of Europeans\nRevolt of 1857")
         
         if st.button("Save Manual Chapters"):
             if sub_input and manual_chapters:
@@ -144,8 +148,9 @@ with tab_quiz:
         q_count = st.slider("Number of Questions:", min_value=10, max_value=20, value=10)
         
         if st.button("Generate Mixed Quiz 🔥"):
-            if not st.session_state['current_chapters'] or selected_ch == "Add chapters first":
-                st.error("Please add chapters first using Option A or Option B.")
+            # Prevent user from generating a quiz on the default placeholder text
+            if not st.session_state['current_chapters'] or selected_ch in ["Add chapters first", "General Review Topic"]:
+                st.error("⚠️ Please add a REAL chapter name using Option B first.")
             else:
                 with st.spinner(f"Assembling custom {diff_level} quiz..."):
                     matching_old = [q for q in st.session_state['old_questions'] if q['chapter'] == selected_ch]
@@ -155,7 +160,7 @@ with tab_quiz:
                     fresh_qs = generate_new_questions(st.session_state['current_subject'], selected_ch, diff_level, fresh_needed)
                     
                     if not fresh_qs:
-                        st.error("🚨 Network error. Please click 'Generate Mixed Quiz' again.")
+                        st.warning("The quiz engine failed. Please check the specific error code printed above.")
                     else:
                         for q in fresh_qs:
                             q['subject'] = st.session_state['current_subject']
