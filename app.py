@@ -126,7 +126,6 @@ with tab_quiz:
         st.header("1. Sync Content Vault")
         existing_subs = list(st.session_state['vault'].keys())
         
-        # ADDED "ALL SUBJECTS" OPTION
         sub_options = ["All Subjects"] + existing_subs if existing_subs else []
         sub_mode = st.radio("Mode:", ["Existing Subject", "New Subject"])
         
@@ -136,25 +135,41 @@ with tab_quiz:
             sub_input = st.text_input("New Subject:")
         
         if sub_input and sub_input != "All Subjects" and sub_input not in st.session_state['vault']:
-            st.session_state['vault'][sub_input] = {"chapters": [], "content": ""}
+            # Initialize with 'files' array to track uploaded PDFs
+            st.session_state['vault'][sub_input] = {"chapters": [], "content": "", "files": []}
             save_data()
 
         st.write("---")
         if sub_input != "All Subjects":
-            opt1, opt2 = st.tabs(["📄 Upload PDF", "✍️ Manual"])
+            # FEATURE 1: Show previously uploaded PDFs
+            prev_files = st.session_state['vault'].get(sub_input, {}).get("files", [])
+            if prev_files:
+                st.info(f"📁 **Active PDFs stored for {sub_input}:**\n" + "\n".join([f"- {f}" for f in prev_files]))
+                st.write("*Do you want to add additional study material?*")
+            else:
+                st.write("*No PDFs uploaded for this subject yet.*")
+
+            opt1, opt2 = st.tabs(["📄 Upload Additional PDF", "✍️ Manual Topics"])
             with opt1:
                 up_files = st.file_uploader("Upload Study Material (Saved Permanently)", type="pdf", accept_multiple_files=True)
                 if st.button("Extract & Save to Vault"):
                     if up_files and sub_input:
                         with st.spinner("Vaulting content safely..."):
+                            if "files" not in st.session_state['vault'][sub_input]:
+                                st.session_state['vault'][sub_input]["files"] = []
+                                
                             for f in up_files:
                                 t = extract_index_text(f.getvalue())
                                 ch = get_chapters_from_ai(t, sub_input)
                                 st.session_state['vault'][sub_input]["chapters"] = list(set(st.session_state['vault'][sub_input]["chapters"] + ch))
                                 st.session_state['vault'][sub_input]["content"] += "\n" + t
+                                st.session_state['vault'][sub_input]["files"].append(f.name) # Track the file name!
                                 time.sleep(4)
+                                
+                            # Remove duplicates in file list
+                            st.session_state['vault'][sub_input]["files"] = list(set(st.session_state['vault'][sub_input]["files"]))
                             save_data()
-                            st.success("Saved safely to your Hard Drive!")
+                            st.success("Files saved safely to your Hard Drive!")
                             st.rerun()
             with opt2:
                 man_chaps = st.text_area("Paste topics (one per line):")
@@ -167,7 +182,6 @@ with tab_quiz:
                         st.rerun()
 
         st.header("2. Build Custom Deck")
-        # GATHER CHAPTERS (Handles the "All Subjects" logic)
         if sub_input == "All Subjects":
             chaps = []
             for s in existing_subs:
@@ -192,21 +206,27 @@ with tab_quiz:
         if st.button("Generate Question Deck 🔥"):
             if sel_chaps:
                 with st.spinner("Compiling questions..."):
-                    # Combine text context based on selection
                     if sub_input == "All Subjects":
-                        v_text = "\n".join([st.session_state['vault'][s]["content"] for s in existing_subs])
+                        v_text = "\n".join([st.session_state['vault'][s].get("content", "") for s in existing_subs])
                     else:
-                        v_text = st.session_state['vault'][sub_input]["content"]
+                        v_text = st.session_state['vault'][sub_input].get("content", "")
                         
                     matching_old = [q for q in st.session_state['old_questions'] if q.get('chapter') in sel_chaps]
                     mix_count = min(len(matching_old), max(1, q_vol // 3)) if matching_old else 0
                     fresh_needed = q_vol - mix_count
                     
+                    # Generate test identifier for tracking
+                    test_count = len([x for x in st.session_state['quiz_history_log'] if x.get('subject') == sub_input]) + 1
+                    test_ref_id = f"{sub_input}_Test_{test_count}"
+                    
                     qs = generate_new_questions(sub_input, sel_chaps, diff, fresh_needed, selected_patterns, v_text)
+                    
                     if qs or mix_count > 0:
                         for q in qs:
                             q['subject'] = sub_input
                             q['difficulty'] = diff
+                            q['test_ref'] = test_ref_id # Tag the question with its Test Number
+                            
                         st.session_state['old_questions'].extend(qs)
                         save_data()
                         
@@ -230,7 +250,6 @@ with tab_quiz:
             if not st.session_state['quiz_submitted']:
                 rem = max(0, int(st.session_state.get('target_duration', 600) - (time.time() - st.session_state.get('test_start_time', time.time()))))
                 
-                # FIXED: NATIVE HTML/JAVASCRIPT SMOOTH COUNTDOWN TIMER
                 timer_html = f"""
                 <div style="font-family: sans-serif; font-size: 24px; font-weight: bold; color: #ff4b4b; background-color: #ffeaea; border: 2px solid #ff4b4b; border-radius: 8px; padding: 10px; text-align: center; margin-bottom: 20px;">
                     ⏱️ Time Remaining: <span id="clock"></span>
@@ -278,7 +297,6 @@ with tab_quiz:
                             
                     net = (correct * 2) - (wrong * 0.66 if neg_mark else 0)
                     
-                    # FIXED: ANALYTICS TEST NAMING CONVENTION
                     test_count = len([x for x in st.session_state['quiz_history_log'] if x.get('subject') == sub_input]) + 1
                     test_name_formatted = f"{sub_input}_Test_{test_count}"
                     
@@ -329,7 +347,6 @@ with tab_analytics:
     if not st.session_state['quiz_history_log']:
         st.info("Performance dashboards will generate dynamically after your first test.")
     else:
-        # Added "All Subjects" summary tab
         tabs = st.tabs(["Overall Summary"] + subjects)
         
         with tabs[0]:
@@ -376,27 +393,34 @@ with tab_analytics:
 
 with tab_history:
     st.header("🗄️ Master Question Repository")
-    # FIXED: ORGANIZED QUESTION BANK
     if st.session_state['old_questions']:
-        # Group questions by subject
+        # FEATURE 2: Organized Categorical Question Bank
         subjects_in_bank = list(set([q.get('subject', 'General') for q in st.session_state['old_questions']]))
         qb_tabs = st.tabs(subjects_in_bank)
         
         for idx, s_tab in enumerate(subjects_in_bank):
             with qb_tabs[idx]:
                 sub_qs = [q for q in st.session_state['old_questions'] if q.get('subject') == s_tab]
+                chapters_in_sub = list(set([q.get('chapter', 'General Review') for q in sub_qs]))
+                
                 st.write(f"**Total Questions Saved for {s_tab}: {len(sub_qs)}**")
-                for item in reversed(sub_qs):
-                    with st.expander(f"📚 {item.get('chapter', 'General Review')} | {item['question'][:80]}..."):
-                        st.markdown(f"**Question:** {item['question']}")
-                        for k, v in item['options'].items():
-                            mark = "🟩" if k == item['correct'] else "⚪"
-                            st.write(f"{mark} {k}) {v}")
-                        st.write(f"**Explanation:** {item['explanation']}")
+                st.write("---")
+                
+                for chap in sorted(chapters_in_sub):
+                    chap_qs = [q for q in sub_qs if q.get('chapter', 'General Review') == chap]
+                    with st.expander(f"📖 Chapter: {chap} ({len(chap_qs)} questions)"):
+                        for item in reversed(chap_qs):
+                            # Displays the exact test number this question originated from
+                            test_lbl = item.get('test_ref', 'Imported/Revision')
+                            st.markdown(f"**[{test_lbl}]** {item['question']}")
+                            for k, v in item['options'].items():
+                                mark = "🟩" if k == item['correct'] else "⚪"
+                                st.write(f"{mark} {k}) {v}")
+                            st.write(f"**Explanation:** {item['explanation']}")
+                            st.write("---")
     else:
         st.write("Storage registers empty.")
 
-# --- THE LIFESAVER: BACKUP TAB ---
 with tab_settings:
     st.header("⚙️ Database Backup & Restore")
     st.warning("If you are hosting this app on a free cloud server (like Streamlit Community Cloud), your data will eventually be wiped when the server sleeps. Use the buttons below to download your database to your PC/iPad, and upload it to restore your progress if it ever disappears.")
@@ -404,11 +428,9 @@ with tab_settings:
     col_dl, col_ul = st.columns(2)
     with col_dl:
         if os.path.exists(DB_FILE):
-            with open(DB_FILE, "r") as f:
-                json_data = f.read()
+            with open(DB_FILE, "r") as f: json_data = f.read()
             st.download_button(label="📥 Download Database Backup", data=json_data, file_name=f"BPSC_Backup_{datetime.datetime.now().strftime('%Y-%m-%d')}.json", mime="application/json", type="primary")
-        else:
-            st.info("No database file found to backup yet.")
+        else: st.info("No database file found to backup yet.")
             
     with col_ul:
         restore_file = st.file_uploader("📤 Restore from Backup File", type="json")
