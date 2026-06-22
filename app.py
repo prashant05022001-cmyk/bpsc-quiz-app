@@ -24,11 +24,7 @@ def load_data():
                 return json.load(f)
         except Exception:
             pass
-    return {
-        "vault": {},
-        "old_questions": [],
-        "quiz_history_log": []
-    }
+    return {"vault": {}, "old_questions": [], "quiz_history_log": []}
 
 def save_data():
     data_to_save = {
@@ -48,6 +44,7 @@ if 'db_loaded' not in st.session_state:
 
 if 'active_quiz' not in st.session_state: st.session_state['active_quiz'] = None
 if 'quiz_submitted' not in st.session_state: st.session_state['quiz_submitted'] = False
+if 'test_config' not in st.session_state: st.session_state['test_config'] = {"marks": 2.0, "penalty": 0.66}
 
 # --- API CONFIGURATION ---
 try:
@@ -80,6 +77,7 @@ def get_chapters_from_ai(text, subject_name, retries=2):
     return []
 
 def generate_new_questions(subject, chapters, difficulty, count, item_types, vault_full_text, retries=2):
+    if count <= 0: return []
     relevant_context = ""
     if vault_full_text:
         relevant_context = vault_full_text[:2000] 
@@ -93,7 +91,7 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, vau
     Elite Civil Services Examiner Mode. Generate {count} distinct questions for Subject: {subject} | Chapters: {', '.join(chapters)}.
     Difficulty: {difficulty}. Formats: {', '.join(item_types)}. Source Material context: {relevant_context}
     Return JSON array exactly:
-    [ {{"id": 1234, "type": "MCQ", "chapter": "{chapters[0]}", "question": "Q?", "options": {{"A": "1", "B": "2", "C": "3", "D": "4"}}, "correct": "A", "explanation": "Exp.", "extra_info": "Fact."}} ]
+    [ {{"id": {random.randint(10000,99999)}, "type": "MCQ", "chapter": "{chapters[0]}", "question": "Q?", "options": {{"A": "1", "B": "2", "C": "3", "D": "4"}}, "correct": "A", "explanation": "Exp.", "extra_info": "Fact."}} ]
     """
     for attempt in range(retries):
         try:
@@ -125,7 +123,6 @@ with tab_quiz:
     with col1:
         st.header("1. Sync Content Vault")
         existing_subs = list(st.session_state['vault'].keys())
-        
         sub_options = ["All Subjects"] + existing_subs if existing_subs else []
         sub_mode = st.radio("Mode:", ["Existing Subject", "New Subject"])
         
@@ -135,41 +132,31 @@ with tab_quiz:
             sub_input = st.text_input("New Subject:")
         
         if sub_input and sub_input != "All Subjects" and sub_input not in st.session_state['vault']:
-            # Initialize with 'files' array to track uploaded PDFs
             st.session_state['vault'][sub_input] = {"chapters": [], "content": "", "files": []}
             save_data()
 
         st.write("---")
         if sub_input != "All Subjects":
-            # FEATURE 1: Show previously uploaded PDFs
             prev_files = st.session_state['vault'].get(sub_input, {}).get("files", [])
             if prev_files:
                 st.info(f"📁 **Active PDFs stored for {sub_input}:**\n" + "\n".join([f"- {f}" for f in prev_files]))
-                st.write("*Do you want to add additional study material?*")
-            else:
-                st.write("*No PDFs uploaded for this subject yet.*")
-
+            
             opt1, opt2 = st.tabs(["📄 Upload Additional PDF", "✍️ Manual Topics"])
             with opt1:
-                up_files = st.file_uploader("Upload Study Material (Saved Permanently)", type="pdf", accept_multiple_files=True)
-                if st.button("Extract & Save to Vault"):
+                up_files = st.file_uploader("Upload Study Material", type="pdf", accept_multiple_files=True)
+                if st.button("Extract & Save"):
                     if up_files and sub_input:
                         with st.spinner("Vaulting content safely..."):
-                            if "files" not in st.session_state['vault'][sub_input]:
-                                st.session_state['vault'][sub_input]["files"] = []
-                                
+                            if "files" not in st.session_state['vault'][sub_input]: st.session_state['vault'][sub_input]["files"] = []
                             for f in up_files:
                                 t = extract_index_text(f.getvalue())
                                 ch = get_chapters_from_ai(t, sub_input)
                                 st.session_state['vault'][sub_input]["chapters"] = list(set(st.session_state['vault'][sub_input]["chapters"] + ch))
                                 st.session_state['vault'][sub_input]["content"] += "\n" + t
-                                st.session_state['vault'][sub_input]["files"].append(f.name) # Track the file name!
+                                st.session_state['vault'][sub_input]["files"].append(f.name)
                                 time.sleep(4)
-                                
-                            # Remove duplicates in file list
                             st.session_state['vault'][sub_input]["files"] = list(set(st.session_state['vault'][sub_input]["files"]))
                             save_data()
-                            st.success("Files saved safely to your Hard Drive!")
                             st.rerun()
             with opt2:
                 man_chaps = st.text_area("Paste topics (one per line):")
@@ -178,54 +165,49 @@ with tab_quiz:
                         new_c = [c.strip() for c in man_chaps.split('\n') if c.strip()]
                         st.session_state['vault'][sub_input]["chapters"] = list(set(st.session_state['vault'][sub_input]["chapters"] + new_c))
                         save_data()
-                        st.success("Topics saved!")
                         st.rerun()
 
         st.header("2. Build Custom Deck")
         if sub_input == "All Subjects":
             chaps = []
-            for s in existing_subs:
-                chaps.extend(st.session_state['vault'][s].get("chapters", []))
+            for s in existing_subs: chaps.extend(st.session_state['vault'][s].get("chapters", []))
         else:
             chaps = st.session_state['vault'].get(sub_input, {}).get("chapters", [])
             
         select_all = st.checkbox("Select All Chapters")
-        if select_all:
-            sel_chaps = chaps
-            st.success(f"All {len(chaps)} chapters selected.")
-        else:
-            sel_chaps = st.multiselect("Select Topics:", options=chaps)
+        sel_chaps = chaps if select_all else st.multiselect("Select Topics:", options=chaps)
             
         diff = st.selectbox("Difficulty:", ["Moderate", "Hard", "UPSC Level"])
-        q_vol = st.slider("Questions:", 5, 20, 10)
+        q_vol = st.slider("Total Questions:", 5, 25, 10)
         t_limit = st.number_input("Timer (Mins):", 1, 60, q_vol)
-        neg_mark = st.checkbox("Negative Marking (1/3rd)", True)
         
-        selected_patterns = ["Single Correct MCQ", "Statement Based"]
+        st.markdown("**Custom Scoring Parameters:**")
+        col_m1, col_m2 = st.columns(2)
+        with col_m1:
+            marks_per_q = st.number_input("Marks per Correct:", min_value=0.5, max_value=5.0, value=2.0, step=0.5)
+        with col_m2:
+            neg_mark_val = st.number_input("Negative Penalty:", min_value=0.0, max_value=5.0, value=0.66, step=0.01)
 
         if st.button("Generate Question Deck 🔥"):
             if sel_chaps:
                 with st.spinner("Compiling questions..."):
-                    if sub_input == "All Subjects":
-                        v_text = "\n".join([st.session_state['vault'][s].get("content", "") for s in existing_subs])
-                    else:
-                        v_text = st.session_state['vault'][sub_input].get("content", "")
+                    if sub_input == "All Subjects": v_text = "\n".join([st.session_state['vault'][s].get("content", "") for s in existing_subs])
+                    else: v_text = st.session_state['vault'][sub_input].get("content", "")
                         
                     matching_old = [q for q in st.session_state['old_questions'] if q.get('chapter') in sel_chaps]
-                    mix_count = min(len(matching_old), max(1, q_vol // 3)) if matching_old else 0
+                    mix_count = min(len(matching_old), max(1, q_vol // 2)) if matching_old else 0
                     fresh_needed = q_vol - mix_count
                     
-                    # Generate test identifier for tracking
                     test_count = len([x for x in st.session_state['quiz_history_log'] if x.get('subject') == sub_input]) + 1
                     test_ref_id = f"{sub_input}_Test_{test_count}"
                     
-                    qs = generate_new_questions(sub_input, sel_chaps, diff, fresh_needed, selected_patterns, v_text)
+                    qs = generate_new_questions(sub_input, sel_chaps, diff, fresh_needed, ["Single Correct MCQ", "Statement Based"], v_text)
                     
                     if qs or mix_count > 0:
                         for q in qs:
                             q['subject'] = sub_input
                             q['difficulty'] = diff
-                            q['test_ref'] = test_ref_id # Tag the question with its Test Number
+                            q['test_ref'] = test_ref_id
                             
                         st.session_state['old_questions'].extend(qs)
                         save_data()
@@ -238,6 +220,7 @@ with tab_quiz:
                         st.session_state['quiz_submitted'] = False
                         st.session_state['test_start_time'] = time.time()
                         st.session_state['target_duration'] = t_limit * 60
+                        st.session_state['test_config'] = {"marks": marks_per_q, "penalty": neg_mark_val}
                         st.rerun()
                     else:
                         st.error("Generation timed out. Google AI Quota reached. Try again later.")
@@ -283,31 +266,49 @@ with tab_quiz:
                     st.session_state['quiz_submitted'] = True
                     correct, wrong, skipped = 0, 0, 0
                     c_perf = {c: {"correct": 0, "incorrect": 0} for c in sel_chaps}
+                    wrong_details = []
+                    
+                    config = st.session_state['test_config']
                     
                     for i, q in enumerate(st.session_state['active_quiz']):
                         qc = q.get('chapter', 'General')
                         if qc not in c_perf: c_perf[qc] = {"correct": 0, "incorrect": 0}
-                        if ans[i] == "Skip": skipped += 1
+                        
+                        is_correct = False
+                        
+                        if ans[i] == "Skip": 
+                            skipped += 1
                         elif ans[i].startswith(q['correct']): 
                             correct += 1
                             c_perf[qc]["correct"] += 1
+                            is_correct = True
                         else: 
                             wrong += 1
                             c_perf[qc]["incorrect"] += 1
+                            wrong_details.append({"chapter": qc, "question": q['question'], "explanation": q['explanation']})
                             
-                    net = (correct * 2) - (wrong * 0.66 if neg_mark else 0)
+                        # Update the master bank with Right/Wrong attempt history
+                        for oq in st.session_state['old_questions']:
+                            if oq.get('id') == q.get('id'):
+                                oq['last_attempt_correct'] = is_correct
+                                break
+                            
+                    net = (correct * config['marks']) - (wrong * config['penalty'])
                     
                     test_count = len([x for x in st.session_state['quiz_history_log'] if x.get('subject') == sub_input]) + 1
+                    # EXACT TIMESTAMP FORMAT APPLIED HERE
+                    timestamp = datetime.datetime.now().strftime("%d %b %Y, %I:%M %p")
                     test_name_formatted = f"{sub_input}_Test_{test_count}"
                     
                     st.session_state['quiz_history_log'].append({
                         "subject": sub_input,
                         "test_name": test_name_formatted,
-                        "date_str": datetime.datetime.now().strftime("%d %b %Y, %I:%M %p"),
+                        "date_str": timestamp,
                         "correct": correct, "incorrect": wrong, "skipped": skipped,
                         "net": round(net, 2), "total_items": len(st.session_state['active_quiz']),
-                        "penalty": round((wrong * 0.66 if neg_mark else 0), 2),
-                        "chapter_perf": c_perf
+                        "penalty": round((wrong * config['penalty']), 2),
+                        "chapter_perf": c_perf,
+                        "wrong_details": wrong_details
                     })
                     save_data()
                     st.rerun()
@@ -321,7 +322,7 @@ with tab_quiz:
                 m4.metric("Net Marks", f"🎯 {log.get('net',0)}")
                 
                 md_out = build_markdown_export(st.session_state['active_quiz'], sub_input)
-                st.download_button("📄 Export Practice Set", data=md_out, file_name=f"Practice_{sub_input}.md", mime="text/markdown")
+                st.download_button("📄 Export Practice Set", data=md_out, file_name=f"{log.get('test_name')}.md", mime="text/markdown")
                 
                 st.write("---")
                 for i, q in enumerate(st.session_state['active_quiz']):
@@ -363,7 +364,8 @@ with tab_analytics:
                 else:
                     for log in reversed(logs):
                         date_display = log.get('date_str', 'Unknown Date')
-                        with st.expander(f"📋 {log.get('test_name', 'Test')} - {date_display}", expanded=False):
+                        # FIXED: TEST NAME AND DATE FORMAT
+                        with st.expander(f"📋 {log.get('test_name')} - {date_display}", expanded=False):
                             cA, cB = st.columns([1, 1])
                             with cA:
                                 st.markdown("### Score Matrix")
@@ -384,6 +386,16 @@ with tab_analytics:
                                             if acc < mn: mn, w_c = acc, c
                                     st.success(f"🌟 **Strong Area:** {b_c}")
                                     st.error(f"📉 **Needs Work:** {w_c}")
+                                    
+                                    # FEATURE 1: INSTANT EXPLANATIONS FOR WEAKEST CHAPTER
+                                    if w_c != "N/A":
+                                        wrong_in_worst = [wq for wq in log.get('wrong_details', []) if wq['chapter'] == w_c]
+                                        if wrong_in_worst:
+                                            with st.expander(f"🔍 Instant Review: Errors in '{w_c}'"):
+                                                for wq in wrong_in_worst:
+                                                    st.markdown(f"**Q:** {wq['question']}")
+                                                    st.info(f"**Concept:** {wq['explanation']}")
+                                                    st.write("---")
 
                             with cB:
                                 ch_df = pd.DataFrame({"Outcome": ["Correct", "Wrong", "Skipped"], "Count": [log.get('correct',0), log.get('incorrect',0), log.get('skipped',0)]})
@@ -394,7 +406,6 @@ with tab_analytics:
 with tab_history:
     st.header("🗄️ Master Question Repository")
     if st.session_state['old_questions']:
-        # FEATURE 2: Organized Categorical Question Bank
         subjects_in_bank = list(set([q.get('subject', 'General') for q in st.session_state['old_questions']]))
         qb_tabs = st.tabs(subjects_in_bank)
         
@@ -403,35 +414,43 @@ with tab_history:
                 sub_qs = [q for q in st.session_state['old_questions'] if q.get('subject') == s_tab]
                 chapters_in_sub = list(set([q.get('chapter', 'General Review') for q in sub_qs]))
                 
-                st.write(f"**Total Questions Saved for {s_tab}: {len(sub_qs)}**")
-                st.write("---")
+                # FEATURE 2: RIGHT AND WRONG SEGREGATION
+                st.write(f"**Total Database Questions for {s_tab}: {len(sub_qs)}**")
                 
                 for chap in sorted(chapters_in_sub):
                     chap_qs = [q for q in sub_qs if q.get('chapter', 'General Review') == chap]
+                    right_qs = [q for q in chap_qs if q.get('last_attempt_correct') == True]
+                    wrong_qs = [q for q in chap_qs if q.get('last_attempt_correct') in [False, None]] # Captures wrong and unattempted
+                    
                     with st.expander(f"📖 Chapter: {chap} ({len(chap_qs)} questions)"):
-                        for item in reversed(chap_qs):
-                            # Displays the exact test number this question originated from
-                            test_lbl = item.get('test_ref', 'Imported/Revision')
-                            st.markdown(f"**[{test_lbl}]** {item['question']}")
-                            for k, v in item['options'].items():
-                                mark = "🟩" if k == item['correct'] else "⚪"
-                                st.write(f"{mark} {k}) {v}")
-                            st.write(f"**Explanation:** {item['explanation']}")
-                            st.write("---")
+                        rt_tab, wt_tab = st.tabs([f"✅ Mastered ({len(right_qs)})", f"❌ Needs Revision ({len(wrong_qs)})"])
+                        
+                        with wt_tab:
+                            for item in reversed(wrong_qs):
+                                st.markdown(f"**[{item.get('test_ref', 'Bank')}]** {item['question']}")
+                                for k, v in item['options'].items():
+                                    mark = "🟩" if k == item['correct'] else "⚪"
+                                    st.write(f"{mark} {k}) {v}")
+                                st.info(f"**Explanation:** {item['explanation']}")
+                                st.write("---")
+                                
+                        with rt_tab:
+                            for item in reversed(right_qs):
+                                st.markdown(f"**[{item.get('test_ref', 'Bank')}]** {item['question']}")
+                                st.success(f"Correct Answer: {item['correct']} - {item['options'].get(item['correct'])}")
+                                st.write("---")
     else:
         st.write("Storage registers empty.")
 
 with tab_settings:
     st.header("⚙️ Database Backup & Restore")
-    st.warning("If you are hosting this app on a free cloud server (like Streamlit Community Cloud), your data will eventually be wiped when the server sleeps. Use the buttons below to download your database to your PC/iPad, and upload it to restore your progress if it ever disappears.")
-    
+    st.warning("If hosting on a free cloud server, data will eventually be wiped. Use these buttons to download your database to your PC, and upload it to restore progress.")
     col_dl, col_ul = st.columns(2)
     with col_dl:
         if os.path.exists(DB_FILE):
             with open(DB_FILE, "r") as f: json_data = f.read()
             st.download_button(label="📥 Download Database Backup", data=json_data, file_name=f"BPSC_Backup_{datetime.datetime.now().strftime('%Y-%m-%d')}.json", mime="application/json", type="primary")
         else: st.info("No database file found to backup yet.")
-            
     with col_ul:
         restore_file = st.file_uploader("📤 Restore from Backup File", type="json")
         if restore_file is not None:
@@ -445,5 +464,4 @@ with tab_settings:
                     st.success("Database restored successfully! The app will now refresh.")
                     time.sleep(2)
                     st.rerun()
-                except Exception:
-                    st.error("Invalid backup file.")
+                except Exception: st.error("Invalid backup file.")
