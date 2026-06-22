@@ -22,7 +22,6 @@ def load_data():
         try:
             with open(DB_FILE, "r") as f:
                 data = json.load(f)
-                # Migration check to guarantee the Recycle Bin structures exist
                 if "recycle_bin" not in data:
                     data["recycle_bin"] = {"subjects": {}, "chapters": {}, "files": {}}
                 return data
@@ -80,14 +79,19 @@ def extract_index_text(file_bytes, num_pages=50):
         return text.strip()
     except Exception: return ""
 
-def get_chapters_from_ai(text, subject_name, retries=2):
-    prompt = f"Extract chapter names from this {subject_name} index. Return ONLY a JSON array of strings."
+def get_chapters_from_ai(text, subject_name, retries=3):
+    prompt = f"Extract chapter names from this {subject_name} index. Return ONLY a JSON array of strings. No markdown."
     for attempt in range(retries):
         try:
-            response = model.generate_content(prompt + f"\nText: {text[:10000]}", generation_config={"response_mime_type": "application/json"})
-            return json.loads(response.text)
+            # INCREASED TO 20,000 CHARACTERS TO REACH DEEP TABLE OF CONTENTS
+            response = model.generate_content(prompt + f"\nText: {text[:20000]}", generation_config={"response_mime_type": "application/json"})
+            raw_text = response.text.strip()
+            if raw_text.startswith("```json"): raw_text = raw_text[7:-3].strip()
+            elif raw_text.startswith("
+```"): raw_text = raw_text[3:-3].strip()
+            return json.loads(raw_text)
         except Exception as e:
-            if "429" in str(e): time.sleep(15)
+            if "429" in str(e) or "Quota" in str(e): time.sleep(15)
             else: return []
     return []
 
@@ -139,7 +143,6 @@ with tab_quiz:
         st.header("1. Sync Content Vault")
         existing_subs = list(st.session_state['vault'].keys())
         
-        # FEATURE 1: SUBJECT LABEL INCLUDES DYNAMIC CHAPTER COUNT
         sub_options = []
         if existing_subs:
             sub_options = ["All Subjects"] + [f"{s} ({len(st.session_state['vault'][s].get('chapters', []))} Chapters)" for s in existing_subs]
@@ -148,7 +151,6 @@ with tab_quiz:
         
         if sub_mode == "Existing Subject" and sub_options:
             selected_sub_display = st.selectbox("Subject:", options=sub_options)
-            # Parse real clean name back out of selection string
             sub_input = selected_sub_display.split(" (")[0] if " (" in selected_sub_display else selected_sub_display
         else:
             sub_input = st.text_input("Enter New Subject Name:")
@@ -171,17 +173,39 @@ with tab_quiz:
                     if up_files and sub_input:
                         with st.spinner("Vaulting content safely..."):
                             if "files" not in st.session_state['vault'][sub_input]: st.session_state['vault'][sub_input]["files"] = []
+                            
                             for f in up_files:
                                 t = extract_index_text(f.getvalue())
+                                
+                                # UPGRADED DIAGNOSTICS: Check if PDF is a scanned image
+                                if len(t.strip()) < 50:
+                                    st.error(f"❌ '{f.name}' appears to be a scanned image PDF. The AI cannot read text from photos. Please upload a digital text PDF.")
+                                    continue
+                                
                                 ch = get_chapters_from_ai(t, sub_input)
-                                st.session_state['vault'][sub_input]["chapters"] = list(set(st.session_state['vault'][sub_input]["chapters"] + ch))
+                                
+                                # UPGRADED DIAGNOSTICS: Show exactly what was added
+                                if not ch:
+                                    st.warning(f"⚠️ AI couldn't detect the index in '{f.name}'. The text was saved for quizzes, but you must type its chapters manually in the 'Manual Topics' tab.")
+                                else:
+                                    old_len = len(st.session_state['vault'][sub_input]["chapters"])
+                                    st.session_state['vault'][sub_input]["chapters"] = list(set(st.session_state['vault'][sub_input]["chapters"] + ch))
+                                    new_len = len(st.session_state['vault'][sub_input]["chapters"])
+                                    added = new_len - old_len
+                                    if added > 0:
+                                        st.success(f"✅ Successfully detected and added {added} new unique chapters from '{f.name}'!")
+                                    else:
+                                        st.info(f"ℹ️ '{f.name}' processed, but its chapters were already in your Vault.")
+
                                 st.session_state['vault'][sub_input]["content"] += "\n" + t
                                 st.session_state['vault'][sub_input]["files"].append(f.name)
-                                time.sleep(4)
+                                time.sleep(3)
+                                
                             st.session_state['vault'][sub_input]["files"] = list(set(st.session_state['vault'][sub_input]["files"]))
                             save_data()
-                            st.success("Files saved safely to your Hard Drive!")
+                            time.sleep(3) # Pauses so you can actually read the success/error messages before refreshing
                             st.rerun()
+                            
             with opt2:
                 man_chaps = st.text_area("Paste topics (one per line):")
                 if st.button("Add Topics"):
@@ -190,10 +214,10 @@ with tab_quiz:
                         st.session_state['vault'][sub_input]["chapters"] = list(set(st.session_state['vault'][sub_input]["chapters"] + new_c))
                         save_data()
                         st.success("Topics committed successfully!")
+                        time.sleep(1)
                         st.rerun()
 
         st.header("2. Build Custom Deck")
-        # FEATURE 1: DICTIONARY ALPHABETICAL SORTING LOGIC FOR CHAPTERS
         if sub_input == "All Subjects":
             chaps = []
             for s in existing_subs: chaps.extend(st.session_state['vault'][s].get("chapters", []))
@@ -415,7 +439,6 @@ with tab_analytics:
                                 agg_c_perf[ch]["correct"] += metrics.get("correct", 0)
                                 agg_c_perf[ch]["incorrect"] += metrics.get("incorrect", 0)
                     
-                    # FEATURE 3: CALCULATE AND podium TOP 3 WEAKEST CHAPTERS
                     chap_accuracies = []
                     for ch, met in agg_c_perf.items():
                         tot = met['correct'] + met['incorrect']
@@ -499,8 +522,6 @@ with tab_history:
         for idx, s_tab in enumerate(subjects_in_bank):
             with qb_tabs[idx]:
                 sub_qs = [q for q in st.session_state['old_questions'] if q.get('subject') == s_tab]
-                
-                # FEATURE 1: DICTIONARY SORTED CHAPTERS IN MASTER QUESTION BANK
                 chapters_in_sub = sorted(list(set([q.get('chapter', 'General Review') for q in sub_qs])))
                 
                 st.write(f"**Total Database Questions for {s_tab}: {len(sub_qs)}**")
@@ -530,11 +551,9 @@ with tab_history:
     else:
         st.write("Storage registers empty.")
 
-# --- UPGRADED: VAULT MANAGEMENT & RECYCLE BIN HUB ---
 with tab_settings:
     st.header("⚙️ Vault Management & Database Control")
     
-    # Initialize recycle bin storage structures dynamically if needed
     if "recycle_bin" not in st.session_state:
         st.session_state["recycle_bin"] = {"subjects": {}, "chapters": {}, "files": {}}
         
@@ -552,11 +571,11 @@ with tab_settings:
             if subs_list:
                 sel_sub_del = st.selectbox("Choose Target Subject:", subs_list, key="sb_del_select")
                 if st.button("Trash Subject", type="primary"):
-                    # Backup to Recycle Bin before hard clear
                     st.session_state['recycle_bin']["subjects"][sel_sub_del] = st.session_state['vault'][sel_sub_del]
                     del st.session_state['vault'][sel_sub_del]
                     save_data()
                     st.success(f"Moved {sel_sub_del} to Recycle Bin.")
+                    time.sleep(1)
                     st.rerun()
             else: st.info("No active subjects.")
                 
@@ -571,10 +590,10 @@ with tab_settings:
                         if sel_sub_chap not in st.session_state['recycle_bin']["chapters"]:
                             st.session_state['recycle_bin']["chapters"][sel_sub_chap] = []
                         st.session_state['recycle_bin']["chapters"][sel_sub_chap].append(sel_chap_del)
-                        
                         st.session_state['vault'][sel_sub_chap]["chapters"].remove(sel_chap_del)
                         save_data()
                         st.success("Moved chapter to Recycle Bin.")
+                        time.sleep(1)
                         st.rerun()
                 else: st.info("No chapters in this subject.")
                     
@@ -589,15 +608,14 @@ with tab_settings:
                         if sel_sub_file not in st.session_state['recycle_bin']["files"]:
                             st.session_state['recycle_bin']["files"][sel_sub_file] = []
                         st.session_state['recycle_bin']["files"][sel_sub_file].append(sel_f_del)
-                        
                         st.session_state['vault'][sel_sub_file]["files"].remove(sel_f_del)
                         save_data()
                         st.success("Moved file link to Recycle Bin.")
+                        time.sleep(1)
                         st.rerun()
                 else: st.info("No active files links attached.")
                 
         st.write("---")
-        # FEATURE 2: THE RECYCLE BIN RECOVERY SYSTEM PANEL
         st.subheader("♻️ The Recycle Recovery Vault")
         st.write("Select any previously deleted components to restore them completely back to your active study loop.")
         
@@ -612,7 +630,8 @@ with tab_settings:
                     st.session_state['vault'][sub_to_restore] = st.session_state['recycle_bin']["subjects"][sub_to_restore]
                     del st.session_state['recycle_bin']["subjects"][sub_to_restore]
                     save_data()
-                    st.success(f"Successfully restored {sub_to_restore} subject structure!")
+                    st.success(f"Successfully restored {sub_to_restore}!")
+                    time.sleep(1)
                     st.rerun()
             else: st.caption("Subject bin empty.")
                 
@@ -629,6 +648,7 @@ with tab_settings:
                         st.session_state['recycle_bin']["chapters"][r_sub_c].remove(r_chap)
                         save_data()
                         st.success(f"Restored chapter back to {r_sub_c}!")
+                        time.sleep(1)
                         st.rerun()
                     else: st.error("Parent subject doesn't exist anymore. Restore the subject structure first.")
             else: st.caption("Chapter bin empty.")
@@ -646,6 +666,7 @@ with tab_settings:
                         st.session_state['recycle_bin']["files"][r_sub_f].remove(r_file)
                         save_data()
                         st.success(f"Linked reference file back to {r_sub_f}!")
+                        time.sleep(1)
                         st.rerun()
                     else: st.error("Parent subject structure missing.")
             else: st.caption("File link bin empty.")
