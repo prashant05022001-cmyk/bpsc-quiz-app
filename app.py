@@ -21,30 +21,40 @@ def load_data():
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r") as f:
-                return json.load(f)
+                data = json.load(f)
+                # Migration check to guarantee the Recycle Bin structures exist
+                if "recycle_bin" not in data:
+                    data["recycle_bin"] = {"subjects": {}, "chapters": {}, "files": {}}
+                return data
         except Exception:
             pass
-    return {"vault": {}, "old_questions": [], "quiz_history_log": []}
+    return {
+        "vault": {}, 
+        "old_questions": [], 
+        "quiz_history_log": [],
+        "recycle_bin": {"subjects": {}, "chapters": {}, "files": {}}
+    }
 
 def save_data():
     data_to_save = {
         "vault": st.session_state['vault'],
         "old_questions": st.session_state['old_questions'],
-        "quiz_history_log": st.session_state['quiz_history_log']
+        "quiz_history_log": st.session_state['quiz_history_log'],
+        "recycle_bin": st.session_state['recycle_bin']
     }
     with open(DB_FILE, "w") as f:
         json.dump(data_to_save, f)
 
-# --- TIMEZONE FIX (HARDCODED TO IST) ---
 def get_ist_time():
-    """Forces the app to always use Indian Standard Time, bypassing cloud server timezones."""
     return datetime.datetime.utcnow() + datetime.timedelta(hours=5, minutes=30)
 
+# --- INITIALIZE COGNITIVE DATA DEKS ---
 if 'db_loaded' not in st.session_state:
     saved_data = load_data()
     st.session_state['vault'] = saved_data.get('vault', {})
     st.session_state['old_questions'] = saved_data.get('old_questions', [])
     st.session_state['quiz_history_log'] = saved_data.get('quiz_history_log', [])
+    st.session_state['recycle_bin'] = saved_data.get('recycle_bin', {"subjects": {}, "chapters": {}, "files": {}})
     st.session_state['db_loaded'] = True
 
 if 'active_quiz' not in st.session_state: st.session_state['active_quiz'] = None
@@ -128,20 +138,28 @@ with tab_quiz:
     with col1:
         st.header("1. Sync Content Vault")
         existing_subs = list(st.session_state['vault'].keys())
-        sub_options = ["All Subjects"] + existing_subs if existing_subs else []
+        
+        # FEATURE 1: SUBJECT LABEL INCLUDES DYNAMIC CHAPTER COUNT
+        sub_options = []
+        if existing_subs:
+            sub_options = ["All Subjects"] + [f"{s} ({len(st.session_state['vault'][s].get('chapters', []))} Chapters)" for s in existing_subs]
+            
         sub_mode = st.radio("Mode:", ["Existing Subject", "New Subject"])
         
         if sub_mode == "Existing Subject" and sub_options:
-            sub_input = st.selectbox("Subject:", options=sub_options)
+            selected_sub_display = st.selectbox("Subject:", options=sub_options)
+            # Parse real clean name back out of selection string
+            sub_input = selected_sub_display.split(" (")[0] if " (" in selected_sub_display else selected_sub_display
         else:
-            sub_input = st.text_input("New Subject:")
+            sub_input = st.text_input("Enter New Subject Name:")
         
         if sub_input and sub_input != "All Subjects" and sub_input not in st.session_state['vault']:
             st.session_state['vault'][sub_input] = {"chapters": [], "content": "", "files": []}
             save_data()
+            st.rerun()
 
         st.write("---")
-        if sub_input != "All Subjects":
+        if sub_input != "All Subjects" and sub_input:
             prev_files = st.session_state['vault'].get(sub_input, {}).get("files", [])
             if prev_files:
                 st.info(f"📁 **Active PDFs stored for {sub_input}:**\n" + "\n".join([f"- {f}" for f in prev_files]))
@@ -162,6 +180,7 @@ with tab_quiz:
                                 time.sleep(4)
                             st.session_state['vault'][sub_input]["files"] = list(set(st.session_state['vault'][sub_input]["files"]))
                             save_data()
+                            st.success("Files saved safely to your Hard Drive!")
                             st.rerun()
             with opt2:
                 man_chaps = st.text_area("Paste topics (one per line):")
@@ -170,14 +189,17 @@ with tab_quiz:
                         new_c = [c.strip() for c in man_chaps.split('\n') if c.strip()]
                         st.session_state['vault'][sub_input]["chapters"] = list(set(st.session_state['vault'][sub_input]["chapters"] + new_c))
                         save_data()
+                        st.success("Topics committed successfully!")
                         st.rerun()
 
         st.header("2. Build Custom Deck")
+        # FEATURE 1: DICTIONARY ALPHABETICAL SORTING LOGIC FOR CHAPTERS
         if sub_input == "All Subjects":
             chaps = []
             for s in existing_subs: chaps.extend(st.session_state['vault'][s].get("chapters", []))
+            chaps = sorted(list(set(chaps)))
         else:
-            chaps = st.session_state['vault'].get(sub_input, {}).get("chapters", [])
+            chaps = sorted(st.session_state['vault'].get(sub_input, {}).get("chapters", []))
             
         select_all = st.checkbox("Select All Chapters")
         sel_chaps = chaps if select_all else st.multiselect("Select Topics:", options=chaps)
@@ -287,7 +309,6 @@ with tab_quiz:
                         if qc not in c_perf: c_perf[qc] = {"correct": 0, "incorrect": 0}
                         
                         is_correct = False
-                        
                         if ans[i] == "Skip": 
                             skipped += 1
                         elif ans[i].startswith(q['correct']): 
@@ -306,14 +327,12 @@ with tab_quiz:
                             
                     net = (correct * config['marks']) - (wrong * config['penalty'])
                     
-                    # TEST NAME AND DATE FIX (IST)
                     test_count = len([x for x in st.session_state['quiz_history_log'] if x.get('subject') == sub_input]) + 1
                     ist_now = get_ist_time()
                     timestamp_full = ist_now.strftime("%d %b %Y, %I:%M %p")
                     timestamp_compact = ist_now.strftime("%d%b_%I%M%p")
                     test_name_formatted = f"{sub_input}_Test_{test_count}_{timestamp_compact}"
                     
-                    # Store Test ID back to questions shown in this active quiz
                     for q in st.session_state['active_quiz']:
                         for oq in st.session_state['old_questions']:
                             if oq.get('id') == q.get('id'):
@@ -396,7 +415,7 @@ with tab_analytics:
                                 agg_c_perf[ch]["correct"] += metrics.get("correct", 0)
                                 agg_c_perf[ch]["incorrect"] += metrics.get("incorrect", 0)
                     
-                    # CALCULATE TOP 3 WEAKEST CHAPTERS
+                    # FEATURE 3: CALCULATE AND podium TOP 3 WEAKEST CHAPTERS
                     chap_accuracies = []
                     for ch, met in agg_c_perf.items():
                         tot = met['correct'] + met['incorrect']
@@ -404,11 +423,11 @@ with tab_analytics:
                             acc = (met['correct'] / tot) * 100
                             chap_accuracies.append((ch, acc))
                             
-                    chap_accuracies.sort(key=lambda x: x[1]) # Sort weakest first
+                    chap_accuracies.sort(key=lambda x: x[1]) 
                     top_3_weakest = chap_accuracies[:3]
                                 
                     with st.container():
-                        st.markdown(f"#### 📚 {sub}")
+                        st.markdown(f"#### 📚 {sub} ({len(st.session_state['vault'].get(sub, {}).get('chapters', []))} Chapters)")
                         sc1, sc2 = st.columns([1, 1])
                         with sc1:
                             st.write(f"**Tests Taken:** {len(sub_df)}")
@@ -419,7 +438,7 @@ with tab_analytics:
                                 for rank, (wc, wacc) in enumerate(top_3_weakest):
                                     st.write(f"{rank+1}. **{wc}** *(Accuracy: {wacc:.1f}%)*")
                             else:
-                                st.info("Need more data for weakness analysis.")
+                                st.info("Need more test data for detailed weakness analytics.")
                         with sc2:
                             pie_df = pd.DataFrame({"Outcome": ["Correct", "Wrong", "Skipped"], "Count": [t_cor, t_wrg, t_skp]})
                             fig = px.pie(pie_df, values='Count', names='Outcome', color='Outcome', color_discrete_map={"Correct": "green", "Wrong": "red", "Skipped": "gray"})
@@ -480,11 +499,13 @@ with tab_history:
         for idx, s_tab in enumerate(subjects_in_bank):
             with qb_tabs[idx]:
                 sub_qs = [q for q in st.session_state['old_questions'] if q.get('subject') == s_tab]
-                chapters_in_sub = list(set([q.get('chapter', 'General Review') for q in sub_qs]))
+                
+                # FEATURE 1: DICTIONARY SORTED CHAPTERS IN MASTER QUESTION BANK
+                chapters_in_sub = sorted(list(set([q.get('chapter', 'General Review') for q in sub_qs])))
                 
                 st.write(f"**Total Database Questions for {s_tab}: {len(sub_qs)}**")
                 
-                for chap in sorted(chapters_in_sub):
+                for chap in chapters_in_sub:
                     chap_qs = [q for q in sub_qs if q.get('chapter', 'General Review') == chap]
                     right_qs = [q for q in chap_qs if q.get('last_attempt_correct') == True]
                     wrong_qs = [q for q in chap_qs if q.get('last_attempt_correct') in [False, None]]
@@ -494,7 +515,7 @@ with tab_history:
                         
                         with wt_tab:
                             for item in reversed(wrong_qs):
-                                st.markdown(f"**[{item.get('test_ref', 'Imported/Bank')}]** {item['question']}")
+                                st.markdown(f"**[{item.get('test_ref', 'Bank')}]** {item['question']}")
                                 for k, v in item['options'].items():
                                     mark = "🟩" if k == item['correct'] else "⚪"
                                     st.write(f"{mark} {k}) {v}")
@@ -503,85 +524,152 @@ with tab_history:
                                 
                         with rt_tab:
                             for item in reversed(right_qs):
-                                st.markdown(f"**[{item.get('test_ref', 'Imported/Bank')}]** {item['question']}")
+                                st.markdown(f"**[{item.get('test_ref', 'Bank')}]** {item['question']}")
                                 st.success(f"Correct Answer: {item['correct']} - {item['options'].get(item['correct'])}")
                                 st.write("---")
     else:
         st.write("Storage registers empty.")
 
-# --- NEW: DATA MANAGEMENT TAB ---
+# --- UPGRADED: VAULT MANAGEMENT & RECYCLE BIN HUB ---
 with tab_settings:
-    st.header("⚙️ Vault Management & Backup")
+    st.header("⚙️ Vault Management & Database Control")
     
-    st.subheader("🗑️ Delete Data")
-    st.write("Use this section to clean up old subjects, chapters, or PDF names.")
+    # Initialize recycle bin storage structures dynamically if needed
+    if "recycle_bin" not in st.session_state:
+        st.session_state["recycle_bin"] = {"subjects": {}, "chapters": {}, "files": {}}
+        
+    t1, t2 = st.tabs(["🗑️ Data Shredder & Deletion Control", "💾 Cloud Backups & System Restores"])
     
-    del_c1, del_c2, del_c3 = st.columns(3)
-    
-    with del_c1:
-        st.markdown("**1. Delete Subject**")
-        subs_to_del = list(st.session_state['vault'].keys())
-        if subs_to_del:
-            sel_sub_del = st.selectbox("Select Subject to Delete:", subs_to_del)
-            if st.button("Delete Entire Subject", type="primary"):
-                del st.session_state['vault'][sel_sub_del]
-                save_data()
-                st.success(f"Deleted {sel_sub_del}!")
-                st.rerun()
-        else:
-            st.info("No subjects to delete.")
-            
-    with del_c2:
-        st.markdown("**2. Delete Chapter**")
-        if subs_to_del:
-            sel_sub_chap = st.selectbox("Select Subject:", subs_to_del, key="del_ch_sub")
-            chaps_to_del = st.session_state['vault'].get(sel_sub_chap, {}).get("chapters", [])
-            if chaps_to_del:
-                sel_chap_del = st.selectbox("Select Chapter to Delete:", chaps_to_del)
-                if st.button("Delete Chapter"):
-                    st.session_state['vault'][sel_sub_chap]["chapters"].remove(sel_chap_del)
+    with t1:
+        st.subheader("Delete and Move Content to Recycle Bin")
+        st.write("Deleting content transfers it securely into the Recycle panel below so it can be recovered later.")
+        
+        del_c1, del_c2, del_c3 = st.columns(3)
+        subs_list = list(st.session_state['vault'].keys())
+        
+        with del_c1:
+            st.markdown("**1. Shred Entire Subject**")
+            if subs_list:
+                sel_sub_del = st.selectbox("Choose Target Subject:", subs_list, key="sb_del_select")
+                if st.button("Trash Subject", type="primary"):
+                    # Backup to Recycle Bin before hard clear
+                    st.session_state['recycle_bin']["subjects"][sel_sub_del] = st.session_state['vault'][sel_sub_del]
+                    del st.session_state['vault'][sel_sub_del]
                     save_data()
-                    st.success("Chapter deleted!")
+                    st.success(f"Moved {sel_sub_del} to Recycle Bin.")
                     st.rerun()
-            else:
-                st.info("No chapters.")
+            else: st.info("No active subjects.")
                 
-    with del_c3:
-        st.markdown("**3. Delete PDF File**")
-        st.caption("*Note: Deleting a file name here cleans up your list, but to fully purge its extracted text from the AI's memory, you must delete and recreate the Subject.*")
-        if subs_to_del:
-            sel_sub_file = st.selectbox("Select Subject:", subs_to_del, key="del_f_sub")
-            files_to_del = st.session_state['vault'].get(sel_sub_file, {}).get("files", [])
-            if files_to_del:
-                sel_f_del = st.selectbox("Select PDF to Remove:", files_to_del)
-                if st.button("Remove PDF Link"):
-                    st.session_state['vault'][sel_sub_file]["files"].remove(sel_f_del)
+        with del_c2:
+            st.markdown("**2. Shred Specific Chapter**")
+            if subs_list:
+                sel_sub_chap = st.selectbox("Choose Parent Subject:", subs_list, key="ch_del_sub_select")
+                chaps_list = sorted(st.session_state['vault'].get(sel_sub_chap, {}).get("chapters", []))
+                if chaps_list:
+                    sel_chap_del = st.selectbox("Choose Chapter to Trash:", chaps_list, key="ch_del_select")
+                    if st.button("Trash Chapter"):
+                        if sel_sub_chap not in st.session_state['recycle_bin']["chapters"]:
+                            st.session_state['recycle_bin']["chapters"][sel_sub_chap] = []
+                        st.session_state['recycle_bin']["chapters"][sel_sub_chap].append(sel_chap_del)
+                        
+                        st.session_state['vault'][sel_sub_chap]["chapters"].remove(sel_chap_del)
+                        save_data()
+                        st.success("Moved chapter to Recycle Bin.")
+                        st.rerun()
+                else: st.info("No chapters in this subject.")
+                    
+        with del_c3:
+            st.markdown("**3. Shred PDF link**")
+            if subs_list:
+                sel_sub_file = st.selectbox("Choose Parent Subject:", subs_list, key="f_del_sub_select")
+                files_list = st.session_state['vault'].get(sel_sub_file, {}).get("files", [])
+                if files_list:
+                    sel_f_del = st.selectbox("Choose PDF to Trash:", files_list, key="f_del_select")
+                    if st.button("Trash PDF Reference"):
+                        if sel_sub_file not in st.session_state['recycle_bin']["files"]:
+                            st.session_state['recycle_bin']["files"][sel_sub_file] = []
+                        st.session_state['recycle_bin']["files"][sel_sub_file].append(sel_f_del)
+                        
+                        st.session_state['vault'][sel_sub_file]["files"].remove(sel_f_del)
+                        save_data()
+                        st.success("Moved file link to Recycle Bin.")
+                        st.rerun()
+                else: st.info("No active files links attached.")
+                
+        st.write("---")
+        # FEATURE 2: THE RECYCLE BIN RECOVERY SYSTEM PANEL
+        st.subheader("♻️ The Recycle Recovery Vault")
+        st.write("Select any previously deleted components to restore them completely back to your active study loop.")
+        
+        rec_c1, rec_c2, rec_c3 = st.columns(3)
+        
+        with rec_c1:
+            st.markdown("**Restore Trashed Subjects**")
+            deleted_subs = list(st.session_state['recycle_bin'].get("subjects", {}).keys())
+            if deleted_subs:
+                sub_to_restore = st.selectbox("Select Subject to Recover:", deleted_subs)
+                if st.button("Recover Subject", type="primary"):
+                    st.session_state['vault'][sub_to_restore] = st.session_state['recycle_bin']["subjects"][sub_to_restore]
+                    del st.session_state['recycle_bin']["subjects"][sub_to_restore]
                     save_data()
-                    st.success("PDF reference removed!")
+                    st.success(f"Successfully restored {sub_to_restore} subject structure!")
                     st.rerun()
-            else:
-                st.info("No files attached.")
+            else: st.caption("Subject bin empty.")
+                
+        with rec_c2:
+            st.markdown("**Restore Trashed Chapters**")
+            sub_ch_bin = list(st.session_state['recycle_bin'].get("chapters", {}).keys())
+            active_sub_ch_bin = [s for s in sub_ch_bin if st.session_state['recycle_bin']["chapters"][s]]
+            if active_sub_ch_bin:
+                r_sub_c = st.selectbox("Choose Subject context:", active_sub_ch_bin)
+                r_chap = st.selectbox("Select Chapter to Recover:", st.session_state['recycle_bin']["chapters"][r_sub_c])
+                if st.button("Recover Chapter"):
+                    if r_sub_c in st.session_state['vault']:
+                        st.session_state['vault'][r_sub_c]["chapters"].append(r_chap)
+                        st.session_state['recycle_bin']["chapters"][r_sub_c].remove(r_chap)
+                        save_data()
+                        st.success(f"Restored chapter back to {r_sub_c}!")
+                        st.rerun()
+                    else: st.error("Parent subject doesn't exist anymore. Restore the subject structure first.")
+            else: st.caption("Chapter bin empty.")
+                
+        with rec_c3:
+            st.markdown("**Restore Trashed PDF Links**")
+            sub_f_bin = list(st.session_state['recycle_bin'].get("files", {}).keys())
+            active_sub_f_bin = [s for s in sub_f_bin if st.session_state['recycle_bin']["files"][s]]
+            if active_sub_f_bin:
+                r_sub_f = st.selectbox("Choose Subject context:", active_sub_f_bin, key="rec_f_sub")
+                r_file = st.selectbox("Select PDF to Recover:", st.session_state['recycle_bin']["files"][r_sub_f])
+                if st.button("Recover PDF link"):
+                    if r_sub_f in st.session_state['vault']:
+                        st.session_state['vault'][r_sub_f]["files"].append(r_file)
+                        st.session_state['recycle_bin']["files"][r_sub_f].remove(r_file)
+                        save_data()
+                        st.success(f"Linked reference file back to {r_sub_f}!")
+                        st.rerun()
+                    else: st.error("Parent subject structure missing.")
+            else: st.caption("File link bin empty.")
 
-    st.write("---")
-    st.subheader("💾 Backup & Restore")
-    st.warning("If hosting on a free cloud server, data will eventually be wiped. Download your database frequently.")
-    col_dl, col_ul = st.columns(2)
-    with col_dl:
-        if os.path.exists(DB_FILE):
-            with open(DB_FILE, "r") as f: json_data = f.read()
-            st.download_button(label="📥 Download Database Backup", data=json_data, file_name=f"BPSC_Backup_{datetime.datetime.now().strftime('%Y-%m-%d')}.json", mime="application/json", type="primary")
-        else: st.info("No database file found to backup yet.")
-    with col_ul:
-        restore_file = st.file_uploader("📤 Restore from Backup File", type="json")
-        if restore_file is not None:
-            if st.button("Restore Database"):
-                try:
-                    uploaded_data = json.loads(restore_file.getvalue())
-                    st.session_state['vault'] = uploaded_data.get('vault', {})
-                    st.session_state['old_questions'] = uploaded_data.get('old_questions', [])
-                    st.session_state['quiz_history_log'] = uploaded_data.get('quiz_history_log', [])
-                    save_data()
-                    st.success("Database restored successfully! The app will now refresh.")
-                    time.sleep(2)
-                    st.rerun()
-                except Exception: st.error("Invalid backup file.")
+    with t2:
+        st.subheader("💾 Hard Drive Backups")
+        col_dl, col_ul = st.columns(2)
+        with col_dl:
+            if os.path.exists(DB_FILE):
+                with open(DB_FILE, "r") as f: json_data = f.read()
+                st.download_button(label="📥 Download Database Backup", data=json_data, file_name=f"BPSC_Backup_{datetime.datetime.now().strftime('%Y-%m-%d')}.json", mime="application/json", type="primary")
+            else: st.info("No database file found to backup yet.")
+        with col_ul:
+            restore_file = st.file_uploader("📤 Restore from Backup File", type="json")
+            if restore_file is not None:
+                if st.button("Restore Database"):
+                    try:
+                        uploaded_data = json.loads(restore_file.getvalue())
+                        st.session_state['vault'] = uploaded_data.get('vault', {})
+                        st.session_state['old_questions'] = uploaded_data.get('old_questions', [])
+                        st.session_state['quiz_history_log'] = uploaded_data.get('quiz_history_log', [])
+                        st.session_state['recycle_bin'] = uploaded_data.get('recycle_bin', {"subjects": {}, "chapters": {}, "files": {}})
+                        save_data()
+                        st.success("Database restored successfully! The app will now refresh.")
+                        time.sleep(2)
+                        st.rerun()
+                    except Exception: st.error("Invalid backup file.")
