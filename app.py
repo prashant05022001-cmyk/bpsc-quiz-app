@@ -132,7 +132,7 @@ def extract_index_text(file_bytes, num_pages=50):
 def get_chapters_from_ai(text, subject_name, retries=3):
     prompt = f"Extract chapter names from this {subject_name} index. Return ONLY a JSON array of strings. No markdown formatting loops."
     
-    # --- FIX: Turn off Safety Filters for History/Polity subjects ---
+    # Safety filters turned off for History/Polity PDFs
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
         {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -148,17 +148,18 @@ def get_chapters_from_ai(text, subject_name, retries=3):
                 safety_settings=safety_settings
             )
             raw_text = response.text.strip()
+            
+            # Cleaning the formatting (This is where the error was!)
             if raw_text.startswith("```json"): 
                 raw_text = raw_text[7:-3].strip()
-            elif raw_text.startswith("
-```"): 
+            elif raw_text.startswith("```"): 
                 raw_text = raw_text[3:-3].strip()
+                
             return json.loads(raw_text)
         except Exception as e:
             if "429" in str(e) or "Quota" in str(e): 
                 time.sleep(15)
             else:
-                # --- FIX: Print the exact error on the screen ---
                 st.error(f"🤖 AI Chapter Parsing Error: {e}") 
                 return []
     return []
