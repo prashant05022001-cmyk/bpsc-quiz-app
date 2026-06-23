@@ -28,40 +28,24 @@ def get_clean_data():
 # --- 2. CLOUD DATABASE CONNECTION LOGIC ---
 def get_gspread_client():
     try:
-        # Check if secrets exist
-        if "GSPREAD_JSON" not in st.secrets:
-            st.sidebar.error("❌ Error: GSPREAD_JSON is missing from secrets.")
+        if "GSPREAD_JSON" not in st.secrets or "SHEET_ID" not in st.secrets:
             return None, None
-        if "SHEET_ID" not in st.secrets:
-            st.sidebar.error("❌ Error: SHEET_ID is missing from secrets.")
-            return None, None
+            
+        json_creds = json.loads(st.secrets["GSPREAD_JSON"])
         
-        # Test JSON Formatting
-        try:
-            json_creds = json.loads(st.secrets["GSPREAD_JSON"])
-        except Exception as e:
-            st.sidebar.error(f"❌ JSON Format Error: {e}")
-            return None, None
-            
-        # Test Google Authorization
-        try:
-            creds = Credentials.from_service_account_info(json_creds)
-            client = gspread.authorize(creds)
-        except Exception as e:
-            st.sidebar.error(f"❌ Google Auth Error: {e}")
-            return None, None
-            
-        # Test Sheet Access
-        try:
-            client.open_by_key(st.secrets["SHEET_ID"])
-        except Exception as e:
-            st.sidebar.error(f"❌ Sheet Access Error: {e}")
-            return None, None
-            
+        # --- THE FIX: We must explicitly request Spreadsheet permissions ---
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        creds = Credentials.from_service_account_info(json_creds).with_scopes(scopes)
+        # -------------------------------------------------------------------
+        
+        client = gspread.authorize(creds)
         return client, st.secrets["SHEET_ID"]
     except Exception as e:
-        st.sidebar.error(f"❌ Unknown Error: {e}")
         return None, None
+
 def save_data_to_cloud(data):
     client, sheet_id = get_gspread_client()
     if client and sheet_id:
