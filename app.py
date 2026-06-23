@@ -51,9 +51,18 @@ def save_data_to_cloud(data):
     if client and sheet_id:
         try:
             sheet = client.open_by_key(sheet_id).sheet1
-            sheet.update(range_name='A1', values=[[json.dumps(data, default=str)]])
+            json_str = json.dumps(data, default=str)
+            
+            # Diagnostic Check: See how big the data is
+            if len(json_str) > 50000:
+                st.error(f"🚨 DATA TOO LARGE: Your vault is {len(json_str)} characters. Google Sheets allows a maximum of 50,000 per cell.")
+                return # Stop the save to prevent a crash
+                
+            sheet.update(range_name='A1', values=[[json_str]])
+            
         except Exception as e:
-            pass # Silent fail to keep app running
+            # Print the exact error on the screen
+            st.error(f"☁️ Cloud Save Error: {e}")
 
 # --- 3. STORAGE LOGIC (Cloud + Local) ---
 DB_FILE = "database.json"
