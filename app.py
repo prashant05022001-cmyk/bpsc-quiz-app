@@ -131,18 +131,36 @@ def extract_index_text(file_bytes, num_pages=50):
 
 def get_chapters_from_ai(text, subject_name, retries=3):
     prompt = f"Extract chapter names from this {subject_name} index. Return ONLY a JSON array of strings. No markdown formatting loops."
+    
+    # --- FIX: Turn off Safety Filters for History/Polity subjects ---
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    ]
+    
     for attempt in range(retries):
         try:
-            response = model.generate_content(prompt + f"\nText: {text[:30000]}", generation_config={"response_mime_type": "application/json"})
+            response = model.generate_content(
+                prompt + f"\nText: {text[:30000]}", 
+                generation_config={"response_mime_type": "application/json"},
+                safety_settings=safety_settings
+            )
             raw_text = response.text.strip()
             if raw_text.startswith("```json"): 
                 raw_text = raw_text[7:-3].strip()
-            elif raw_text.startswith("```"): 
+            elif raw_text.startswith("
+```"): 
                 raw_text = raw_text[3:-3].strip()
             return json.loads(raw_text)
         except Exception as e:
-            if "429" in str(e) or "Quota" in str(e): time.sleep(15)
-            else: return []
+            if "429" in str(e) or "Quota" in str(e): 
+                time.sleep(15)
+            else:
+                # --- FIX: Print the exact error on the screen ---
+                st.error(f"🤖 AI Chapter Parsing Error: {e}") 
+                return []
     return []
 
 def generate_new_questions(subject, chapters, difficulty, count, item_types, vault_full_text, retries=2):
@@ -162,15 +180,30 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, vau
     Return JSON array exactly:
     [ {{"id": {random.randint(10000,99999)}, "type": "MCQ", "chapter": "{chapters[0] if chapters else 'General'}", "question": "Q?", "options": {{"A": "1", "B": "2", "C": "3", "D": "4"}}, "correct": "A", "explanation": "Exp.", "extra_info": "Fact."}} ]
     """
+    
+    safety_settings = [
+        {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "BLOCK_NONE"},
+        {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "BLOCK_NONE"},
+    ]
+
     for attempt in range(retries):
         try:
-            response = model.generate_content(prompt, generation_config={"response_mime_type": "application/json"})
+            response = model.generate_content(
+                prompt, 
+                generation_config={"response_mime_type": "application/json"},
+                safety_settings=safety_settings
+            )
             return json.loads(response.text)
         except Exception as e:
             if "429" in str(e):
                 st.warning("Speed limit hit. AI is pausing. Retrying in 20s...")
                 time.sleep(20)
-            else: return []
+            else: 
+                # --- FIX: Print the exact error on the screen ---
+                st.error(f"🤖 AI Question Generation Error: {e}")
+                return []
     return []
 
 def build_markdown_export(quiz_pool, subject):
