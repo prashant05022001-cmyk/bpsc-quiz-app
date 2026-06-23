@@ -113,4 +113,9 @@ with tab4:
         save_data()
         st.success("Synced to Google Sheets!")
     
-    st.download_button("Download Backup File", json.dumps(get_clean_data()), "backup.json")
+    # FIXED LINE 110: Using get_clean_data() instead of st.session_state
+    st.download_button(
+        "Download Backup File", 
+        json.dumps(get_clean_data()), 
+        "backup.json"
+    )
