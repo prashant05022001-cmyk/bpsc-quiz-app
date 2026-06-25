@@ -16,7 +16,7 @@ from google.oauth2.service_account import Credentials
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Civil Services Smart Quiz Dashboard", page_icon="📚", layout="wide")
 
-# --- 1. CLEAN DATA HELPER (Fixes JSON Crash) ---
+# --- 1. CLEAN DATA HELPER ---
 def get_clean_data():
     return {
         "vault": st.session_state.get('vault', {}),
@@ -32,18 +32,14 @@ def get_gspread_client():
             return None, None
             
         json_creds = json.loads(st.secrets["GSPREAD_JSON"])
-        
-        # --- THE FIX: We must explicitly request Spreadsheet permissions ---
         scopes = [
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
         creds = Credentials.from_service_account_info(json_creds).with_scopes(scopes)
-        # -------------------------------------------------------------------
-        
         client = gspread.authorize(creds)
         return client, st.secrets["SHEET_ID"]
-    except Exception as e:
+    except Exception:
         return None, None
 
 def save_data_to_cloud(data):
@@ -53,15 +49,13 @@ def save_data_to_cloud(data):
             sheet = client.open_by_key(sheet_id).sheet1
             json_str = json.dumps(data, default=str)
             
-            # Diagnostic Check: See how big the data is
-            if len(json_str) > 50000:
-                st.error(f"🚨 DATA TOO LARGE: Your vault is {len(json_str)} characters. Google Sheets allows a maximum of 50,000 per cell.")
-                return # Stop the save to prevent a crash
-                
-            sheet.update(range_name='A1', values=[[json_str]])
+            # Slice massive data into chunks of 45,000 chars to bypass Google's 50k limit
+            chunk_size = 45000
+            chunks = [[json_str[i:i+chunk_size]] for i in range(0, len(json_str), chunk_size)]
             
+            sheet.clear()
+            sheet.update(range_name=f'A1:A{len(chunks)}', values=chunks)
         except Exception as e:
-            # Print the exact error on the screen
             st.error(f"☁️ Cloud Save Error: {e}")
 
 # --- 3. STORAGE LOGIC (Cloud + Local) ---
@@ -72,10 +66,11 @@ def load_data():
     client, sheet_id = get_gspread_client()
     if client:
         try:
-            val = client.open_by_key(sheet_id).sheet1.acell('A1').value
-            if val:
+            records = client.open_by_key(sheet_id).sheet1.col_values(1)
+            if records:
+                val = "".join(records)
                 return json.loads(val)
-        except:
+        except Exception:
             pass
             
     # B. Local Fallback
@@ -86,7 +81,7 @@ def load_data():
                 if "recycle_bin" not in data:
                     data["recycle_bin"] = {"subjects": {}, "chapters": {}, "files": {}}
                 return data
-        except: pass
+        except Exception: pass
         
     return {
         "vault": {}, 
@@ -123,7 +118,7 @@ if 'test_config' not in st.session_state: st.session_state['test_config'] = {"ma
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
     model = genai.GenerativeModel('gemini-2.5-flash')
-except Exception as e:
+except Exception:
     st.error("API Key missing! Please add it in Streamlit Advanced Settings.")
 
 # --- 6. HELPERS ---
@@ -141,7 +136,7 @@ def extract_index_text(file_bytes, num_pages=50):
 def get_chapters_from_ai(text, subject_name, retries=3):
     prompt = f"Extract chapter names from this {subject_name} index. Return ONLY a JSON array of strings. No markdown formatting loops."
     
-    # Safety filters turned off for History/Polity PDFs
+    # Bypass Safety Filters for History/Polity PDFs
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
         {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "BLOCK_NONE"},
@@ -158,7 +153,6 @@ def get_chapters_from_ai(text, subject_name, retries=3):
             )
             raw_text = response.text.strip()
             
-            # Cleaning the formatting (This is where the error was!)
             if raw_text.startswith("```json"): 
                 raw_text = raw_text[7:-3].strip()
             elif raw_text.startswith("```"): 
@@ -211,7 +205,6 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, vau
                 st.warning("Speed limit hit. AI is pausing. Retrying in 20s...")
                 time.sleep(20)
             else: 
-                # --- FIX: Print the exact error on the screen ---
                 st.error(f"🤖 AI Question Generation Error: {e}")
                 return []
     return []
