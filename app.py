@@ -13,6 +13,7 @@ import os
 import gspread
 from google.oauth2.service_account import Credentials
 import dropbox
+import re
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Civil Services Smart Quiz Dashboard", page_icon="📚", layout="wide")
@@ -163,7 +164,8 @@ def extract_index_text(file_bytes, num_pages=50):
     except Exception: return ""
 
 def get_chapters_from_ai(text, subject_name, retries=3):
-    prompt = f"Extract the table of contents/chapter names from this {subject_name} document. You MUST return ONLY a JSON array of strings representing the chapters. Example: [\"Chapter 1\", \"Chapter 2\"]."
+    # CRITICAL FIX: Abandoning JSON for long indexes. Using a foolproof Plain-Text format.
+    prompt = f"Extract the chapter titles from this {subject_name} document's index. Return ONLY the chapter titles separated by a double pipe symbol '||'. Do not include page numbers, bullets, or arrays. Example format: Historical Background||Making of the Constitution||Salient Features||Preamble"
     
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -175,28 +177,24 @@ def get_chapters_from_ai(text, subject_name, retries=3):
     for attempt in range(retries):
         try:
             response = model.generate_content(
-                prompt + f"\n\nDocument Text:\n{text[:30000]}", 
-                generation_config={"response_mime_type": "application/json"},
+                prompt + f"\n\nDocument Text:\n{text[:35000]}", 
                 safety_settings=safety_settings
             )
-            raw_text = response.text.strip()
+            raw_text = response.text.strip().replace("```text", "").replace("```", "").strip()
             
-            if raw_text.startswith("```json"): 
-                raw_text = raw_text[7:-3].strip()
-            elif raw_text.startswith("```"): 
-                raw_text = raw_text[3:-3].strip()
-                
-            parsed_data = json.loads(raw_text)
+            # Primary method: Splitting by ||
+            if "||" in raw_text:
+                chaps = [c.strip() for c in raw_text.split("||") if len(c.strip()) > 2]
+            else:
+                # Backup method: If the AI uses new lines anyway, clean the numbers off the front
+                chaps = [re.sub(r'^[\d\.\-\*\s]+', '', c).strip() for c in raw_text.split('\n') if len(c.strip()) > 2]
             
-            # SMART PARSER: If the AI accidentally returns a dictionary instead of a list, extract the list.
-            if isinstance(parsed_data, dict):
-                for key, value in parsed_data.items():
-                    if isinstance(value, list):
-                        return [str(v) for v in value]
-                return [str(k) for k in parsed_data.keys()]
-                
-            if isinstance(parsed_data, list):
-                return [str(item) for item in parsed_data]
+            # Clean out any garbage like "Page 12"
+            valid_chaps = [c for c in chaps if not c.lower().startswith('page') and len(c) < 120]
+            
+            if valid_chaps:
+                # Remove duplicates while preserving order
+                return list(dict.fromkeys(valid_chaps))
                 
         except Exception as e:
             if "429" in str(e) or "Quota" in str(e): 
