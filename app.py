@@ -13,6 +13,7 @@ import os
 import gspread
 from google.oauth2.service_account import Credentials
 import dropbox
+import re  # <--- NEW: Added for bulletproof chapter extraction
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Civil Services Smart Quiz Dashboard", page_icon="📚", layout="wide")
@@ -56,7 +57,6 @@ def save_data_to_cloud(data):
             
             sheet.clear()
             sheet.update(range_name=f'A1:A{len(chunks)}', values=chunks)
-            # Force cache clear on rewrite so next load reads updated state
             st.cache_data.clear()
         except Exception as e:
             st.error(f"☁️ Cloud Save Error: {e}")
@@ -90,11 +90,9 @@ DB_FILE = "database.json"
 
 @st.cache_data(show_spinner="⚡ Syncing with Cloud Registry...")
 def fetch_cloud_data():
-    """Optimized batch-fetcher to pull the sliced column values at lightning speed."""
     client, sheet_id = get_gspread_client()
     if client:
         try:
-            # Fetches the full range in one single batch query
             records = client.open_by_key(sheet_id).sheet1.col_values(1)
             if records:
                 val = "".join(records)
@@ -104,12 +102,10 @@ def fetch_cloud_data():
     return None
 
 def load_data():
-    # Try high-speed cached fetch first
     cloud_data = fetch_cloud_data()
     if cloud_data:
         return cloud_data
             
-    # Local Fallback
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r") as f:
@@ -168,7 +164,7 @@ def extract_index_text(file_bytes, num_pages=50):
     except Exception: return ""
 
 def get_chapters_from_ai(text, subject_name, retries=3):
-    prompt = f"Extract chapter names from this {subject_name} index. Return ONLY a JSON array of strings. No markdown formatting loops."
+    prompt = f"Extract chapter names from this {subject_name} index. Return ONLY a pure JSON array of strings (e.g. [\"Chapter 1\", \"Chapter 2\"]). Absolutely no conversational text."
     
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -186,18 +182,26 @@ def get_chapters_from_ai(text, subject_name, retries=3):
             )
             raw_text = response.text.strip()
             
+            # --- NEW: Bulletproof Regex Scanner ---
+            # This hunts down the brackets [ ] and rips the array out, ignoring AI garbage text.
+            match = re.search(r'\[.*\]', raw_text, re.DOTALL)
+            if match:
+                return json.loads(match.group(0))
+            
+            # Fallback for old parsing method
             if raw_text.startswith("```json"): 
                 raw_text = raw_text[7:-3].strip()
             elif raw_text.startswith("```"): 
                 raw_text = raw_text[3:-3].strip()
                 
             return json.loads(raw_text)
+            
         except Exception as e:
             if "429" in str(e) or "Quota" in str(e): 
+                st.toast("⚠️ Google API is rate-limiting you. Pausing for 15 seconds to try again...", icon="⏳")
                 time.sleep(15)
             else:
-                st.error(f"🤖 AI Chapter Parsing Error: {e}") 
-                return []
+                pass 
     return []
 
 def generate_new_questions(subject, chapters, difficulty, count, item_types, vault_full_text, retries=2):
