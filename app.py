@@ -153,18 +153,18 @@ except Exception:
 
 # --- 6. HELPERS ---
 @st.cache_data(show_spinner=False)
-def extract_index_text(file_bytes, num_pages=50):
+def extract_full_text(file_bytes):
+    """CRITICAL FIX: Extracts the entire book so the AI actually has the study material."""
     try:
         pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
         text = ""
-        for page_num in range(min(len(pdf_reader.pages), num_pages)):
+        for page_num in range(len(pdf_reader.pages)):
             page_text = pdf_reader.pages[page_num].extract_text()
             if page_text: text += page_text + "\n"
         return text.strip()
     except Exception: return ""
 
-def get_chapters_from_ai(text, subject_name, retries=3):
-    # CRITICAL FIX: Abandoning JSON for long indexes. Using a foolproof Plain-Text format.
+def get_chapters_from_ai(text_chunk, subject_name, retries=3):
     prompt = f"Extract the chapter titles from this {subject_name} document's index. Return ONLY the chapter titles separated by a double pipe symbol '||'. Do not include page numbers, bullets, or arrays. Example format: Historical Background||Making of the Constitution||Salient Features||Preamble"
     
     safety_settings = [
@@ -177,23 +177,19 @@ def get_chapters_from_ai(text, subject_name, retries=3):
     for attempt in range(retries):
         try:
             response = model.generate_content(
-                prompt + f"\n\nDocument Text:\n{text[:35000]}", 
+                prompt + f"\n\nDocument Text:\n{text_chunk}", 
                 safety_settings=safety_settings
             )
             raw_text = response.text.strip().replace("```text", "").replace("```", "").strip()
             
-            # Primary method: Splitting by ||
             if "||" in raw_text:
                 chaps = [c.strip() for c in raw_text.split("||") if len(c.strip()) > 2]
             else:
-                # Backup method: If the AI uses new lines anyway, clean the numbers off the front
                 chaps = [re.sub(r'^[\d\.\-\*\s]+', '', c).strip() for c in raw_text.split('\n') if len(c.strip()) > 2]
             
-            # Clean out any garbage like "Page 12"
             valid_chaps = [c for c in chaps if not c.lower().startswith('page') and len(c) < 120]
             
             if valid_chaps:
-                # Remove duplicates while preserving order
                 return list(dict.fromkeys(valid_chaps))
                 
         except Exception as e:
@@ -208,18 +204,18 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, vau
     if count <= 0: return []
     relevant_context = ""
     if vault_full_text:
-        relevant_context = vault_full_text[:2000] 
+        relevant_context = vault_full_text[:3000] 
         for ch in chapters:
             start_idx = vault_full_text.find(ch)
             if start_idx != -1:
-                relevant_context += "\n... " + vault_full_text[max(0, start_idx-500) : start_idx+1500]
-    relevant_context = relevant_context[:10000]
+                relevant_context += "\n... " + vault_full_text[max(0, start_idx-1000) : start_idx+4000]
+    relevant_context = relevant_context[:25000]
 
     prompt = f"""
     Elite Civil Services Examiner Mode. Generate {count} distinct questions for Subject: {subject} | Chapters: {', '.join(chapters)}.
     Difficulty: {difficulty}. Formats: {', '.join(item_types)}. Source Material context: {relevant_context}
 
-    CRITICAL INSTRUCTION FOR 'explanation': Do NOT just explain the correct option. You MUST provide a COMPREHENSIVE, multi-paragraph revision summary of the ENTIRE core topic mentioned in the question based strictly on the provided context. For example, if the question is about Gandhi, provide a full summary of his activities, movements, and timeline; if about the Portuguese, cover their arrival, governors, policies, and decline. 
+    CRITICAL INSTRUCTION FOR 'explanation': Do NOT just explain the correct option. You MUST provide a COMPREHENSIVE, multi-paragraph revision summary of the ENTIRE core topic mentioned in the question based strictly on the provided context. 
 
     Return JSON array exactly:
     [ {{"id": {random.randint(10000,99999)}, "type": "MCQ", "chapter": "{chapters[0] if chapters else 'General'}", "question": "Q?", "options": {{"A": "1", "B": "2", "C": "3", "D": "4"}}, "correct": "A", "explanation": "Massive detailed topic summary here...", "extra_info": "Fact."}} ]
@@ -239,7 +235,16 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, vau
                 generation_config={"response_mime_type": "application/json"},
                 safety_settings=safety_settings
             )
-            return json.loads(response.text)
+            
+            # Bulletproof fallback in case AI wraps the JSON in conversational markdown
+            raw_text = response.text.strip()
+            if raw_text.startswith("```json"): 
+                raw_text = raw_text[7:-3].strip()
+            elif raw_text.startswith("```"): 
+                raw_text = raw_text[3:-3].strip()
+                
+            return json.loads(raw_text)
+            
         except Exception as e:
             if "429" in str(e):
                 st.warning("Speed limit hit. AI is pausing. Retrying in 20s...")
@@ -330,19 +335,21 @@ with tab_quiz:
                 up_files = st.file_uploader("Upload Study Material", type="pdf", accept_multiple_files=True)
                 if st.button("Extract & Save"):
                     if up_files and sub_input:
-                        with st.spinner("Vaulting content and syncing to free cloud folder..."):
+                        with st.spinner("Vaulting complete book text and syncing to Cloud..."):
                             if "files" not in st.session_state['vault'][sub_input]: st.session_state['vault'][sub_input]["files"] = []
                             if "file_chapter_mapping" not in st.session_state['vault'][sub_input]: st.session_state['vault'][sub_input]["file_chapter_mapping"] = {}
                             if "file_links" not in st.session_state['vault'][sub_input]: st.session_state['vault'][sub_input]["file_links"] = {}
                             
                             for f in up_files:
-                                t = extract_index_text(f.getvalue())
+                                # Extract FULL text for memory
+                                t = extract_full_text(f.getvalue())
                                 
                                 if len(t.strip()) < 50:
                                     st.error(f"❌ '{f.name}' appears to be a scanned image PDF. Please upload a digital text PDF.")
                                     continue
                                 
-                                ch = get_chapters_from_ai(t, sub_input)
+                                # Send only the first 35k chars to the chapter detector to prevent AI overload
+                                ch = get_chapters_from_ai(t[:35000], sub_input)
                                 
                                 if not ch:
                                     st.warning(f"⚠️ AI couldn't detect index in '{f.name}'. Content saved, but chapters must be manually assigned.")
