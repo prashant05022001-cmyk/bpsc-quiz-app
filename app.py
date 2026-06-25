@@ -12,14 +12,9 @@ import plotly.express as px
 import os
 import gspread
 from google.oauth2.service_account import Credentials
-from googleapiclient.discovery import build
-from googleapiclient.http import MediaIoBaseUpload
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Civil Services Smart Quiz Dashboard", page_icon="📚", layout="wide")
-
-# --- GOOGLE DRIVE TARGET FOLDER ---
-DRIVE_FOLDER_ID = "1MeTeXlPlNDlxZ0xmMLwWg-h8zJE67weV"
 
 # --- 1. CLEAN DATA HELPER ---
 def get_clean_data():
@@ -30,7 +25,7 @@ def get_clean_data():
         "recycle_bin": st.session_state.get('recycle_bin', {"subjects": {}, "chapters": {}, "files": {}})
     }
 
-# --- 2. CLOUD DATABASE & DRIVE CONNECTION LOGIC ---
+# --- 2. CLOUD DATABASE CONNECTION LOGIC ---
 def get_gspread_client():
     try:
         if "GSPREAD_JSON" not in st.secrets or "SHEET_ID" not in st.secrets:
@@ -61,39 +56,6 @@ def save_data_to_cloud(data):
             sheet.update(range_name=f'A1:A{len(chunks)}', values=chunks)
         except Exception as e:
             st.error(f"☁️ Cloud Save Error: {e}")
-
-def upload_pdf_to_drive(file_bytes, file_name, folder_id):
-    """Uploads the physical PDF to your Google Drive and returns a viewable link."""
-    try:
-        if "GSPREAD_JSON" not in st.secrets: return None
-        json_creds = json.loads(st.secrets["GSPREAD_JSON"])
-        scopes = ["https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(json_creds).with_scopes(scopes)
-        
-        drive_service = build('drive', 'v3', credentials=creds)
-        
-        file_metadata = {'name': file_name, 'parents': [folder_id]}
-        media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype='application/pdf', resumable=True)
-        
-        # FIX: supportTeamDrive=True tells Google to use the destination folder's quota instead of the service account's quota
-        file = drive_service.files().create(
-            body=file_metadata, 
-            media_body=media, 
-            fields='id, webViewLink',
-            supportsAllDrives=True
-        ).execute()
-        
-        # Make the file viewable so you can click the link in your dashboard
-        drive_service.permissions().create(
-            fileId=file.get('id'),
-            body={'type': 'anyone', 'role': 'reader'},
-            supportsAllDrives=True
-        ).execute()
-        
-        return file.get('webViewLink')
-    except Exception as e:
-        st.error(f"☁️ Drive Upload Error: {e}")
-        return None
 
 # --- 3. STORAGE LOGIC (Cloud + Local) ---
 DB_FILE = "database.json"
@@ -299,8 +261,7 @@ with tab_quiz:
                 "content": "", 
                 "files": [],
                 "file_chapter_mapping": {},
-                "manual_chapters": [],
-                "file_links": {} 
+                "manual_chapters": []
             }
             save_data()
             st.rerun()
@@ -309,23 +270,16 @@ with tab_quiz:
         if sub_input != "All Subjects" and sub_input:
             prev_files = st.session_state['vault'].get(sub_input, {}).get("files", [])
             if prev_files:
-                st.info(f"📁 **Active PDFs stored for {sub_input}:**")
-                file_links = st.session_state['vault'].get(sub_input, {}).get("file_links", {})
-                for f in prev_files:
-                    if f in file_links and file_links[f]:
-                        st.markdown(f"- [{f}]({file_links[f]})")
-                    else:
-                        st.markdown(f"- {f}")
+                st.info(f"📁 **Active PDFs stored for {sub_input}:**\n" + "\n".join([f"- {f}" for f in prev_files]))
             
             opt1, opt2 = st.tabs(["📄 Upload Additional PDF", "✍️ Manual Topics"])
             with opt1:
                 up_files = st.file_uploader("Upload Study Material", type="pdf", accept_multiple_files=True)
                 if st.button("Extract & Save"):
                     if up_files and sub_input:
-                        with st.spinner("Vaulting content and uploading to Google Drive..."):
+                        with st.spinner("Vaulting content safely..."):
                             if "files" not in st.session_state['vault'][sub_input]: st.session_state['vault'][sub_input]["files"] = []
                             if "file_chapter_mapping" not in st.session_state['vault'][sub_input]: st.session_state['vault'][sub_input]["file_chapter_mapping"] = {}
-                            if "file_links" not in st.session_state['vault'][sub_input]: st.session_state['vault'][sub_input]["file_links"] = {}
                             
                             for f in up_files:
                                 t = extract_index_text(f.getvalue())
@@ -341,18 +295,11 @@ with tab_quiz:
                                 else:
                                     st.session_state['vault'][sub_input]["file_chapter_mapping"][f.name] = ch
                                     st.session_state['vault'][sub_input]["chapters"] = list(set(st.session_state['vault'][sub_input]["chapters"] + ch))
-                                    
-                                # UPLOAD TO GOOGLE DRIVE
-                                drive_link = upload_pdf_to_drive(f.getvalue(), f.name, DRIVE_FOLDER_ID)
-                                if drive_link:
-                                    st.session_state['vault'][sub_input]["file_links"][f.name] = drive_link
-                                    st.success(f"✅ Extracted chapters and uploaded '{f.name}' to Drive!")
-                                else:
-                                    st.warning(f"⚠️ Chapters extracted, but failed to upload '{f.name}' to Drive.")
+                                    st.success(f"✅ Successfully extracted {len(ch)} chapters linked exclusively to '{f.name}'!")
 
                                 st.session_state['vault'][sub_input]["content"] += "\n" + t
                                 st.session_state['vault'][sub_input]["files"].append(f.name)
-                                time.sleep(2)
+                                time.sleep(3)
                                 
                             st.session_state['vault'][sub_input]["files"] = list(set(st.session_state['vault'][sub_input]["files"]))
                             save_data()
@@ -770,19 +717,15 @@ with tab_settings:
                             st.session_state['recycle_bin']["files"][sel_sub_file] = []
                             
                         file_chaps = st.session_state['vault'][sel_sub_file].get("file_chapter_mapping", {}).get(sel_f_del, [])
-                        file_link = st.session_state['vault'][sel_sub_file].get("file_links", {}).get(sel_f_del, "")
                         
                         st.session_state['recycle_bin']["files"][sel_sub_file].append({
                             "name": sel_f_del, 
-                            "mapped_chapters": file_chaps,
-                            "drive_link": file_link
+                            "mapped_chapters": file_chaps
                         })
                         
                         st.session_state['vault'][sel_sub_file]["files"].remove(sel_f_del)
                         if sel_f_del in st.session_state['vault'][sel_sub_file].get("file_chapter_mapping", {}):
                             del st.session_state['vault'][sel_sub_file]["file_chapter_mapping"][sel_f_del]
-                        if sel_f_del in st.session_state['vault'][sel_sub_file].get("file_links", {}):
-                            del st.session_state['vault'][sel_sub_file]["file_links"][sel_f_del]
                             
                         save_data()
                         st.success("Moved file link and its mapped chapters to Recycle Bin.")
@@ -847,23 +790,18 @@ with tab_settings:
                     if r_sub_f in st.session_state['vault']:
                         if "file_chapter_mapping" not in st.session_state['vault'][r_sub_f]:
                             st.session_state['vault'][r_sub_f]["file_chapter_mapping"] = {}
-                        if "file_links" not in st.session_state['vault'][r_sub_f]:
-                            st.session_state['vault'][r_sub_f]["file_links"] = {}
                         
-                        target_element = {"name": selected_f_name, "mapped_chapters": [], "drive_link": ""}
+                        target_element = {"name": selected_f_name, "mapped_chapters": []}
                         for item in raw_bin_options:
                             if isinstance(item, dict) and item["name"] == selected_f_name:
                                 target_element = item
                                 break
                             elif isinstance(item, str) and item == selected_f_name:
-                                target_element = {"name": item, "mapped_chapters": [], "drive_link": ""}
+                                target_element = {"name": item, "mapped_chapters": []}
                                 break
                         
                         st.session_state['vault'][r_sub_f]["files"].append(selected_f_name)
                         st.session_state['vault'][r_sub_f]["file_chapter_mapping"][selected_f_name] = target_element["mapped_chapters"]
-                        
-                        if target_element.get("drive_link"):
-                            st.session_state['vault'][r_sub_f]["file_links"][selected_f_name] = target_element["drive_link"]
                         
                         st.session_state['recycle_bin']["files"][r_sub_f].remove(item)
                         save_data()
