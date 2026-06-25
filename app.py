@@ -12,6 +12,7 @@ import plotly.express as px
 import os
 import gspread
 from google.oauth2.service_account import Credentials
+import dropbox
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Civil Services Smart Quiz Dashboard", page_icon="📚", layout="wide")
@@ -56,6 +57,34 @@ def save_data_to_cloud(data):
             sheet.update(range_name=f'A1:A{len(chunks)}', values=chunks)
         except Exception as e:
             st.error(f"☁️ Cloud Save Error: {e}")
+
+# --- NEW: FREE DROPBOX CLOUD STORAGE FOR PHYSICAL PDFS ---
+def upload_pdf_to_dropbox(file_bytes, file_name):
+    try:
+        if "DROPBOX_TOKEN" not in st.secrets:
+            return None
+        dbx = dropbox.Dropbox(st.secrets["DROPBOX_TOKEN"])
+        path = f"/{file_name}"
+        
+        # Upload binary file
+        dbx.files_upload(file_bytes, path, mode=dropbox.files.WriteMode.overwrite)
+        
+        # Create a direct shareable link
+        try:
+            link_info = dbx.sharing_create_shared_link_with_settings(path)
+            raw_url = link_info.url
+        except dropbox.exceptions.ApiError:
+            # Link might already exist, retrieve it
+            links = dbx.sharing_list_shared_links(path, direct_only=True).links
+            raw_url = links[0].url if links else None
+            
+        if raw_url:
+            # Change URL ending to force browser direct download/viewing instead of preview page
+            return raw_url.replace("?dl=0", "?dl=1")
+        return None
+    except Exception as e:
+        st.error(f"📦 Dropbox Sync Error: {e}")
+        return None
 
 # --- 3. STORAGE LOGIC (Cloud + Local) ---
 DB_FILE = "database.json"
@@ -261,7 +290,8 @@ with tab_quiz:
                 "content": "", 
                 "files": [],
                 "file_chapter_mapping": {},
-                "manual_chapters": []
+                "manual_chapters": [],
+                "file_links": {}
             }
             save_data()
             st.rerun()
@@ -270,16 +300,23 @@ with tab_quiz:
         if sub_input != "All Subjects" and sub_input:
             prev_files = st.session_state['vault'].get(sub_input, {}).get("files", [])
             if prev_files:
-                st.info(f"📁 **Active PDFs stored for {sub_input}:**\n" + "\n".join([f"- {f}" for f in prev_files]))
+                st.info(f"📁 **Active PDFs stored for {sub_input}:**")
+                file_links = st.session_state['vault'].get(sub_input, {}).get("file_links", {})
+                for f in prev_files:
+                    if f in file_links and file_links[f]:
+                        st.markdown(f"- [{f}]({file_links[f]})")
+                    else:
+                        st.markdown(f"- {f}")
             
             opt1, opt2 = st.tabs(["📄 Upload Additional PDF", "✍️ Manual Topics"])
             with opt1:
                 up_files = st.file_uploader("Upload Study Material", type="pdf", accept_multiple_files=True)
                 if st.button("Extract & Save"):
                     if up_files and sub_input:
-                        with st.spinner("Vaulting content safely..."):
+                        with st.spinner("Vaulting content and syncing to free cloud folder..."):
                             if "files" not in st.session_state['vault'][sub_input]: st.session_state['vault'][sub_input]["files"] = []
                             if "file_chapter_mapping" not in st.session_state['vault'][sub_input]: st.session_state['vault'][sub_input]["file_chapter_mapping"] = {}
+                            if "file_links" not in st.session_state['vault'][sub_input]: st.session_state['vault'][sub_input]["file_links"] = {}
                             
                             for f in up_files:
                                 t = extract_index_text(f.getvalue())
@@ -295,11 +332,18 @@ with tab_quiz:
                                 else:
                                     st.session_state['vault'][sub_input]["file_chapter_mapping"][f.name] = ch
                                     st.session_state['vault'][sub_input]["chapters"] = list(set(st.session_state['vault'][sub_input]["chapters"] + ch))
-                                    st.success(f"✅ Successfully extracted {len(ch)} chapters linked exclusively to '{f.name}'!")
+                                    
+                                # UPLOAD TO FREE DROPBOX
+                                cloud_link = upload_pdf_to_dropbox(f.getvalue(), f.name)
+                                if cloud_link:
+                                    st.session_state['vault'][sub_input]["file_links"][f.name] = cloud_link
+                                    st.success(f"✅ Extracted chapters and saved '{f.name}' to Cloud!")
+                                else:
+                                    st.warning(f"⚠️ Chapters saved, but physical file could not be uploaded.")
 
                                 st.session_state['vault'][sub_input]["content"] += "\n" + t
                                 st.session_state['vault'][sub_input]["files"].append(f.name)
-                                time.sleep(3)
+                                time.sleep(1)
                                 
                             st.session_state['vault'][sub_input]["files"] = list(set(st.session_state['vault'][sub_input]["files"]))
                             save_data()
@@ -717,15 +761,19 @@ with tab_settings:
                             st.session_state['recycle_bin']["files"][sel_sub_file] = []
                             
                         file_chaps = st.session_state['vault'][sel_sub_file].get("file_chapter_mapping", {}).get(sel_f_del, [])
+                        file_link = st.session_state['vault'][sel_sub_file].get("file_links", {}).get(sel_f_del, "")
                         
                         st.session_state['recycle_bin']["files"][sel_sub_file].append({
                             "name": sel_f_del, 
-                            "mapped_chapters": file_chaps
+                            "mapped_chapters": file_chaps,
+                            "dropbox_link": file_link
                         })
                         
                         st.session_state['vault'][sel_sub_file]["files"].remove(sel_f_del)
                         if sel_f_del in st.session_state['vault'][sel_sub_file].get("file_chapter_mapping", {}):
                             del st.session_state['vault'][sel_sub_file]["file_chapter_mapping"][sel_f_del]
+                        if sel_f_del in st.session_state['vault'][sel_sub_file].get("file_links", {}):
+                            del st.session_state['vault'][sel_sub_file]["file_links"][sel_f_del]
                             
                         save_data()
                         st.success("Moved file link and its mapped chapters to Recycle Bin.")
@@ -790,18 +838,23 @@ with tab_settings:
                     if r_sub_f in st.session_state['vault']:
                         if "file_chapter_mapping" not in st.session_state['vault'][r_sub_f]:
                             st.session_state['vault'][r_sub_f]["file_chapter_mapping"] = {}
+                        if "file_links" not in st.session_state['vault'][r_sub_f]:
+                            st.session_state['vault'][r_sub_f]["file_links"] = {}
                         
-                        target_element = {"name": selected_f_name, "mapped_chapters": []}
+                        target_element = {"name": selected_f_name, "mapped_chapters": [], "dropbox_link": ""}
                         for item in raw_bin_options:
                             if isinstance(item, dict) and item["name"] == selected_f_name:
                                 target_element = item
                                 break
                             elif isinstance(item, str) and item == selected_f_name:
-                                target_element = {"name": item, "mapped_chapters": []}
+                                target_element = {"name": item, "mapped_chapters": [], "dropbox_link": ""}
                                 break
                         
                         st.session_state['vault'][r_sub_f]["files"].append(selected_f_name)
                         st.session_state['vault'][r_sub_f]["file_chapter_mapping"][selected_f_name] = target_element["mapped_chapters"]
+                        
+                        if target_element.get("dropbox_link"):
+                            st.session_state['vault'][r_sub_f]["file_links"][selected_f_name] = target_element["dropbox_link"]
                         
                         st.session_state['recycle_bin']["files"][r_sub_f].remove(item)
                         save_data()
