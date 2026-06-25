@@ -161,7 +161,9 @@ def extract_full_text(file_bytes):
             page_text = pdf_reader.pages[page_num].extract_text()
             if page_text: text += page_text + "\n"
         return text.strip()
-    except Exception: return ""
+    except Exception as e: 
+        st.error(f"❌ Core PDF Reader Failure: {e}")
+        return ""
 
 def get_chapters_from_ai(text_chunk, subject_name, retries=3):
     prompt = f"Scan this {subject_name} text deeply to find the Table of Contents or Index. Extract the chapter titles. Return ONLY the chapter titles separated by a double pipe symbol '||'. Do not include page numbers. Example format: Historical Background||Making of the Constitution||Salient Features||Preamble"
@@ -192,8 +194,9 @@ def get_chapters_from_ai(text_chunk, subject_name, retries=3):
                 return list(dict.fromkeys(valid_chaps))
                 
         except Exception as e:
+            # UNMASKED: Printing the exact error message to the UI so we can diagnose the issue
+            st.error(f"🚨 Background Gemini API Alert (Attempt {attempt+1}/{retries}): {e}")
             if "429" in str(e) or "Quota" in str(e): 
-                st.toast("⚠️ Google API is rate-limiting you. Pausing for 15 seconds to try again...", icon="⏳")
                 time.sleep(15)
             else:
                 time.sleep(2)
@@ -244,11 +247,10 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, vau
             return json.loads(raw_text)
             
         except Exception as e:
+            st.error(f"🚨 Background Question Generation Error: {e}")
             if "429" in str(e):
-                st.warning("Speed limit hit. AI is pausing. Retrying in 20s...")
                 time.sleep(20)
             else: 
-                st.error(f"🤖 AI Question Generation Error: {e}")
                 return []
     return []
 
@@ -345,7 +347,6 @@ with tab_quiz:
                                     st.error(f"❌ '{f.name}' appears to be a scanned image PDF. Please upload a digital text PDF.")
                                     continue
                                 
-                                # EXPANDED VISION: Reading the first 150,000 characters (~50 pages) to catch deep indexes
                                 ch = get_chapters_from_ai(t[:150000], sub_input)
                                 
                                 if not ch:
@@ -634,7 +635,7 @@ with tab_analytics:
                                 for rank, (wc, wacc) in enumerate(top_3_weakest):
                                     st.write(f"{rank+1}. **{wc}** *(Accuracy: {wacc:.1f}%)*")
                             else:
-                                st.info("Need more test data for detailed weakness analytics.")
+                                .info("Need more test data for detailed weakness analytics.")
                         with sc2:
                             pie_df = pd.DataFrame({"Outcome": ["Correct", "Wrong", "Skipped"], "Count": [t_cor, t_wrg, t_skp]})
                             fig = px.pie(pie_df, values='Count', names='Outcome', color='Outcome', color_discrete_map={"Correct": "green", "Wrong": "red", "Skipped": "gray"})
