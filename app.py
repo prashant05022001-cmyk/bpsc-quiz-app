@@ -75,13 +75,19 @@ def upload_pdf_to_drive(file_bytes, file_name, folder_id):
         file_metadata = {'name': file_name, 'parents': [folder_id]}
         media = MediaIoBaseUpload(io.BytesIO(file_bytes), mimetype='application/pdf', resumable=True)
         
-        # Execute upload
-        file = drive_service.files().create(body=file_metadata, media_body=media, fields='id, webViewLink').execute()
+        # FIX: supportTeamDrive=True tells Google to use the destination folder's quota instead of the service account's quota
+        file = drive_service.files().create(
+            body=file_metadata, 
+            media_body=media, 
+            fields='id, webViewLink',
+            supportsAllDrives=True
+        ).execute()
         
         # Make the file viewable so you can click the link in your dashboard
         drive_service.permissions().create(
             fileId=file.get('id'),
-            body={'type': 'anyone', 'role': 'reader'}
+            body={'type': 'anyone', 'role': 'reader'},
+            supportsAllDrives=True
         ).execute()
         
         return file.get('webViewLink')
