@@ -154,7 +154,6 @@ except Exception:
 # --- 6. HELPERS ---
 @st.cache_data(show_spinner=False)
 def extract_full_text(file_bytes):
-    """CRITICAL FIX: Extracts the entire book so the AI actually has the study material."""
     try:
         pdf_reader = PyPDF2.PdfReader(io.BytesIO(file_bytes))
         text = ""
@@ -165,7 +164,7 @@ def extract_full_text(file_bytes):
     except Exception: return ""
 
 def get_chapters_from_ai(text_chunk, subject_name, retries=3):
-    prompt = f"Extract the chapter titles from this {subject_name} document's index. Return ONLY the chapter titles separated by a double pipe symbol '||'. Do not include page numbers, bullets, or arrays. Example format: Historical Background||Making of the Constitution||Salient Features||Preamble"
+    prompt = f"Scan this {subject_name} text deeply to find the Table of Contents or Index. Extract the chapter titles. Return ONLY the chapter titles separated by a double pipe symbol '||'. Do not include page numbers. Example format: Historical Background||Making of the Constitution||Salient Features||Preamble"
     
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -236,7 +235,6 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, vau
                 safety_settings=safety_settings
             )
             
-            # Bulletproof fallback in case AI wraps the JSON in conversational markdown
             raw_text = response.text.strip()
             if raw_text.startswith("```json"): 
                 raw_text = raw_text[7:-3].strip()
@@ -341,15 +339,14 @@ with tab_quiz:
                             if "file_links" not in st.session_state['vault'][sub_input]: st.session_state['vault'][sub_input]["file_links"] = {}
                             
                             for f in up_files:
-                                # Extract FULL text for memory
                                 t = extract_full_text(f.getvalue())
                                 
                                 if len(t.strip()) < 50:
                                     st.error(f"❌ '{f.name}' appears to be a scanned image PDF. Please upload a digital text PDF.")
                                     continue
                                 
-                                # Send only the first 35k chars to the chapter detector to prevent AI overload
-                                ch = get_chapters_from_ai(t[:35000], sub_input)
+                                # EXPANDED VISION: Reading the first 150,000 characters (~50 pages) to catch deep indexes
+                                ch = get_chapters_from_ai(t[:150000], sub_input)
                                 
                                 if not ch:
                                     st.warning(f"⚠️ AI couldn't detect index in '{f.name}'. Content saved, but chapters must be manually assigned.")
