@@ -13,7 +13,6 @@ import os
 import gspread
 from google.oauth2.service_account import Credentials
 import dropbox
-import re  # <--- NEW: Added for bulletproof chapter extraction
 
 # --- PAGE SETUP ---
 st.set_page_config(page_title="Civil Services Smart Quiz Dashboard", page_icon="📚", layout="wide")
@@ -164,7 +163,7 @@ def extract_index_text(file_bytes, num_pages=50):
     except Exception: return ""
 
 def get_chapters_from_ai(text, subject_name, retries=3):
-    prompt = f"Extract chapter names from this {subject_name} index. Return ONLY a pure JSON array of strings (e.g. [\"Chapter 1\", \"Chapter 2\"]). Absolutely no conversational text."
+    prompt = f"Extract the table of contents/chapter names from this {subject_name} document. You MUST return ONLY a JSON array of strings representing the chapters. Example: [\"Chapter 1\", \"Chapter 2\"]."
     
     safety_settings = [
         {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_NONE"},
@@ -176,32 +175,35 @@ def get_chapters_from_ai(text, subject_name, retries=3):
     for attempt in range(retries):
         try:
             response = model.generate_content(
-                prompt + f"\nText: {text[:30000]}", 
+                prompt + f"\n\nDocument Text:\n{text[:30000]}", 
                 generation_config={"response_mime_type": "application/json"},
                 safety_settings=safety_settings
             )
             raw_text = response.text.strip()
             
-            # --- NEW: Bulletproof Regex Scanner ---
-            # This hunts down the brackets [ ] and rips the array out, ignoring AI garbage text.
-            match = re.search(r'\[.*\]', raw_text, re.DOTALL)
-            if match:
-                return json.loads(match.group(0))
-            
-            # Fallback for old parsing method
             if raw_text.startswith("```json"): 
                 raw_text = raw_text[7:-3].strip()
             elif raw_text.startswith("```"): 
                 raw_text = raw_text[3:-3].strip()
                 
-            return json.loads(raw_text)
+            parsed_data = json.loads(raw_text)
             
+            # SMART PARSER: If the AI accidentally returns a dictionary instead of a list, extract the list.
+            if isinstance(parsed_data, dict):
+                for key, value in parsed_data.items():
+                    if isinstance(value, list):
+                        return [str(v) for v in value]
+                return [str(k) for k in parsed_data.keys()]
+                
+            if isinstance(parsed_data, list):
+                return [str(item) for item in parsed_data]
+                
         except Exception as e:
             if "429" in str(e) or "Quota" in str(e): 
                 st.toast("⚠️ Google API is rate-limiting you. Pausing for 15 seconds to try again...", icon="⏳")
                 time.sleep(15)
             else:
-                pass 
+                time.sleep(2)
     return []
 
 def generate_new_questions(subject, chapters, difficulty, count, item_types, vault_full_text, retries=2):
@@ -353,9 +355,15 @@ with tab_quiz:
                                 cloud_link = upload_pdf_to_dropbox(f.getvalue(), f.name)
                                 if cloud_link:
                                     st.session_state['vault'][sub_input]["file_links"][f.name] = cloud_link
-                                    st.success(f"✅ Extracted chapters and saved '{f.name}' to Cloud!")
+                                    if ch:
+                                        st.success(f"✅ Extracted {len(ch)} chapters and saved '{f.name}' to Cloud!")
+                                    else:
+                                        st.success(f"✅ Saved '{f.name}' to Cloud! (Chapters need manual entry)")
                                 else:
-                                    st.warning(f"⚠️ Chapters saved, but physical file could not be uploaded.")
+                                    if ch:
+                                        st.warning(f"⚠️ Extracted {len(ch)} chapters, but physical file could not be uploaded to Dropbox.")
+                                    else:
+                                        st.error(f"❌ Failed to extract chapters AND failed to upload '{f.name}'.")
 
                                 st.session_state['vault'][sub_input]["content"] += "\n" + t
                                 st.session_state['vault'][sub_input]["files"].append(f.name)
