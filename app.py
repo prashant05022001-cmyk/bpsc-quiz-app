@@ -58,7 +58,7 @@ def save_data_to_cloud(data):
         except Exception as e:
             st.error(f"☁️ Cloud Save Error: {e}")
 
-# --- NEW: FREE DROPBOX CLOUD STORAGE FOR PHYSICAL PDFS ---
+# --- FREE DROPBOX CLOUD STORAGE ---
 def upload_pdf_to_dropbox(file_bytes, file_name):
     try:
         if "DROPBOX_TOKEN" not in st.secrets:
@@ -66,20 +66,16 @@ def upload_pdf_to_dropbox(file_bytes, file_name):
         dbx = dropbox.Dropbox(st.secrets["DROPBOX_TOKEN"])
         path = f"/{file_name}"
         
-        # Upload binary file
         dbx.files_upload(file_bytes, path, mode=dropbox.files.WriteMode.overwrite)
         
-        # Create a direct shareable link
         try:
             link_info = dbx.sharing_create_shared_link_with_settings(path)
             raw_url = link_info.url
         except dropbox.exceptions.ApiError:
-            # Link might already exist, retrieve it
             links = dbx.sharing_list_shared_links(path, direct_only=True).links
             raw_url = links[0].url if links else None
             
         if raw_url:
-            # Change URL ending to force browser direct download/viewing instead of preview page
             return raw_url.replace("?dl=0", "?dl=1")
         return None
     except Exception as e:
@@ -204,8 +200,11 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, vau
     prompt = f"""
     Elite Civil Services Examiner Mode. Generate {count} distinct questions for Subject: {subject} | Chapters: {', '.join(chapters)}.
     Difficulty: {difficulty}. Formats: {', '.join(item_types)}. Source Material context: {relevant_context}
+
+    CRITICAL INSTRUCTION FOR 'explanation': Do NOT just explain the correct option. You MUST provide a COMPREHENSIVE, multi-paragraph revision summary of the ENTIRE core topic mentioned in the question based strictly on the provided context. For example, if the question is about Gandhi, provide a full summary of his activities, movements, and timeline; if about the Portuguese, cover their arrival, governors, policies, and decline. 
+
     Return JSON array exactly:
-    [ {{"id": {random.randint(10000,99999)}, "type": "MCQ", "chapter": "{chapters[0] if chapters else 'General'}", "question": "Q?", "options": {{"A": "1", "B": "2", "C": "3", "D": "4"}}, "correct": "A", "explanation": "Exp.", "extra_info": "Fact."}} ]
+    [ {{"id": {random.randint(10000,99999)}, "type": "MCQ", "chapter": "{chapters[0] if chapters else 'General'}", "question": "Q?", "options": {{"A": "1", "B": "2", "C": "3", "D": "4"}}, "correct": "A", "explanation": "Massive detailed topic summary here...", "extra_info": "Fact."}} ]
     """
     
     safety_settings = [
@@ -237,7 +236,7 @@ def build_markdown_export(quiz_pool, subject):
     for idx, q in enumerate(quiz_pool):
         md += f"### Q{idx+1} [{q.get('type', 'MCQ')}] ({q.get('chapter', '')})\n{q['question']}\n\n"
         for k, v in q['options'].items(): md += f"- **{k}**: {v}\n"
-        md += f"\n**Correct:** {q['correct']} | **Explanation:** {q['explanation']}\n\n---\n"
+        md += f"\n**Correct:** {q['correct']} | **Comprehensive Review:** {q['explanation']}\n\n---\n"
     return md
 
 def get_active_chapters(subject):
@@ -264,7 +263,7 @@ else:
 
 st.write("---")
 
-tab_quiz, tab_analytics, tab_history, tab_settings = st.tabs(["🎯 Live Simulator", "📊 Analytics Hub", "🗄️ Question Bank", "⚙️ Vault Management & Backup"])
+tab_quiz, tab_analytics, tab_history, tab_settings = st.tabs(["🎯 Live Simulator", "📊 Analytics Hub", "🗄️ Question Bank", "⚙️ Vault Management"])
 
 with tab_quiz:
     col1, col2 = st.columns([1, 2])
@@ -333,7 +332,6 @@ with tab_quiz:
                                     st.session_state['vault'][sub_input]["file_chapter_mapping"][f.name] = ch
                                     st.session_state['vault'][sub_input]["chapters"] = list(set(st.session_state['vault'][sub_input]["chapters"] + ch))
                                     
-                                # UPLOAD TO FREE DROPBOX
                                 cloud_link = upload_pdf_to_dropbox(f.getvalue(), f.name)
                                 if cloud_link:
                                     st.session_state['vault'][sub_input]["file_links"][f.name] = cloud_link
@@ -391,7 +389,7 @@ with tab_quiz:
 
         if st.button("Generate Question Deck 🔥"):
             if sel_chaps:
-                with st.spinner("Compiling questions..."):
+                with st.spinner("Compiling comprehensive questions..."):
                     if sub_input == "All Subjects": v_text = "\n".join([st.session_state['vault'][s].get("content", "") for s in existing_subs])
                     else: v_text = st.session_state['vault'][sub_input].get("content", "")
                         
@@ -541,8 +539,8 @@ with tab_quiz:
                         if k == q['correct']: st.markdown(f"🟩 **{k}) {v} (Correct Key)**")
                         elif ans[i].startswith(k) and ans[i] != "Skip": st.markdown(f"🟥 **{k}) {v} (Your Pick)**")
                         else: st.markdown(f"⚪ {k}) {v}")
-                    with st.expander("👁️ Core Conceptual Breakdown"):
-                        st.write(f"**Explanation:** {q['explanation']}")
+                    with st.expander("📘 Comprehensive Topic Mastery (Complete Revision)"):
+                        st.markdown(f"{q['explanation']}")
                         st.markdown(f"💡 *Strategic Point:* {q.get('extra_info','')}")
                 
                 if st.button("Reload Simulator"):
@@ -704,7 +702,7 @@ with tab_settings:
     if "recycle_bin" not in st.session_state:
         st.session_state["recycle_bin"] = {"subjects": {}, "chapters": {}, "files": {}}
         
-    t1, t2 = st.tabs(["🗑️ Data Shredder & Deletion Control", "💾 Cloud Backups & System Restores"])
+    t1, t2, t3 = st.tabs(["🗑️ Data Shredder", "💾 Cloud Backups", "✏️ Rename Vault Items"])
     
     with t1:
         st.subheader("Delete and Move Content to Recycle Bin")
@@ -893,3 +891,65 @@ with tab_settings:
                         time.sleep(2)
                         st.rerun()
                     except Exception: st.error("Invalid backup file.")
+
+    with t3:
+        st.subheader("✏️ Mass Rename Subjects & Chapters")
+        st.write("Update names here and the system will automatically relink your entire Question Bank and Analytics history to the new name.")
+        
+        ren_col1, ren_col2 = st.columns(2)
+        subs_list_ren = list(st.session_state['vault'].keys())
+        
+        with ren_col1:
+            st.markdown("**1. Rename an Entire Subject**")
+            if subs_list_ren:
+                old_sub = st.selectbox("Select Subject to Rename:", subs_list_ren, key="ren_sub_sel")
+                new_sub = st.text_input("Enter New Subject Name:", key="ren_sub_input")
+                if st.button("Update Subject Name", type="primary"):
+                    if new_sub and new_sub != old_sub and new_sub not in st.session_state['vault']:
+                        st.session_state['vault'][new_sub] = st.session_state['vault'].pop(old_sub)
+                        for q in st.session_state['old_questions']:
+                            if q.get('subject') == old_sub: q['subject'] = new_sub
+                        for log in st.session_state['quiz_history_log']:
+                            if log.get('subject') == old_sub: log['subject'] = new_sub
+                        save_data()
+                        st.success(f"Renamed '{old_sub}' to '{new_sub}'!")
+                        time.sleep(1)
+                        st.rerun()
+                    elif new_sub in st.session_state['vault']:
+                        st.error("A subject with that name already exists.")
+            else: st.info("No active subjects.")
+                
+        with ren_col2:
+            st.markdown("**2. Rename a Specific Chapter**")
+            if subs_list_ren:
+                target_sub = st.selectbox("Select Parent Subject:", subs_list_ren, key="ren_chap_sub")
+                chaps_list_ren = sorted(get_active_chapters(target_sub))
+                if chaps_list_ren:
+                    old_chap = st.selectbox("Select Chapter to Rename:", chaps_list_ren, key="ren_chap_sel")
+                    new_chap = st.text_input("Enter New Chapter Name:", key="ren_chap_input")
+                    if st.button("Update Chapter Name"):
+                        if new_chap and new_chap != old_chap:
+                            v = st.session_state['vault'][target_sub]
+                            if old_chap in v.get("chapters", []):
+                                v["chapters"] = [new_chap if c == old_chap else c for c in v["chapters"]]
+                            if old_chap in v.get("manual_chapters", []):
+                                v["manual_chapters"] = [new_chap if c == old_chap else c for c in v["manual_chapters"]]
+                            for f, chaps in v.get("file_chapter_mapping", {}).items():
+                                v["file_chapter_mapping"][f] = [new_chap if c == old_chap else c for c in chaps]
+                                
+                            for q in st.session_state['old_questions']:
+                                if q.get('subject') == target_sub and q.get('chapter') == old_chap:
+                                    q['chapter'] = new_chap
+                                    
+                            for log in st.session_state['quiz_history_log']:
+                                if log.get('subject') == target_sub:
+                                    if old_chap in log.get('chapter_perf', {}):
+                                        log['chapter_perf'][new_chap] = log['chapter_perf'].pop(old_chap)
+                                    for w in log.get('wrong_details', []):
+                                        if w.get('chapter') == old_chap: w['chapter'] = new_chap
+                                        
+                            save_data()
+                            st.success(f"Renamed '{old_chap}' to '{new_chap}'!")
+                            time.sleep(1)
+                            st.rerun()
+                else: st.info("No active chapters in this subject.")
