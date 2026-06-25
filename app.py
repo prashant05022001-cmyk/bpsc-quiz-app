@@ -27,6 +27,7 @@ def get_clean_data():
     }
 
 # --- 2. CLOUD DATABASE CONNECTION LOGIC ---
+@st.cache_resource(show_spinner=False)
 def get_gspread_client():
     try:
         if "GSPREAD_JSON" not in st.secrets or "SHEET_ID" not in st.secrets:
@@ -55,6 +56,8 @@ def save_data_to_cloud(data):
             
             sheet.clear()
             sheet.update(range_name=f'A1:A{len(chunks)}', values=chunks)
+            # Force cache clear on rewrite so next load reads updated state
+            st.cache_data.clear()
         except Exception as e:
             st.error(f"☁️ Cloud Save Error: {e}")
 
@@ -82,20 +85,31 @@ def upload_pdf_to_dropbox(file_bytes, file_name):
         st.error(f"📦 Dropbox Sync Error: {e}")
         return None
 
-# --- 3. STORAGE LOGIC (Cloud + Local) ---
+# --- 3. OPTIMIZED CACHED STORAGE LOGIC ---
 DB_FILE = "database.json"
 
-def load_data():
+@st.cache_data(show_spinner="⚡ Syncing with Cloud Registry...")
+def fetch_cloud_data():
+    """Optimized batch-fetcher to pull the sliced column values at lightning speed."""
     client, sheet_id = get_gspread_client()
     if client:
         try:
+            # Fetches the full range in one single batch query
             records = client.open_by_key(sheet_id).sheet1.col_values(1)
             if records:
                 val = "".join(records)
                 return json.loads(val)
         except Exception:
             pass
+    return None
+
+def load_data():
+    # Try high-speed cached fetch first
+    cloud_data = fetch_cloud_data()
+    if cloud_data:
+        return cloud_data
             
+    # Local Fallback
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r") as f:
@@ -345,7 +359,7 @@ with tab_quiz:
                                 
                             st.session_state['vault'][sub_input]["files"] = list(set(st.session_state['vault'][sub_input]["files"]))
                             save_data()
-                            time.sleep(2)
+                            time.sleep(1)
                             st.rerun()
                             
             with opt2:
