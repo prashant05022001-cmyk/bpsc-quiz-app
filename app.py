@@ -96,14 +96,11 @@ def upload_pdf_to_dropbox(file_bytes, file_name):
         st.error(f"📦 Dropbox PDF Sync Error: {e}")
         return None
 
-# --- 3. STORAGE LOGIC ---
+# --- 3. OPTIMIZED STORAGE LOGIC (LOCAL FIRST) ---
 DB_FILE = "database.json"
 
 def load_data():
-    cloud_data = fetch_cloud_data()
-    if cloud_data:
-        return cloud_data
-            
+    # 1. LIGHTNING FAST: Try Local Hard Drive First!
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r") as f:
@@ -112,6 +109,16 @@ def load_data():
                     data["recycle_bin"] = {"subjects": {}, "chapters": {}, "files": {}}
                 return data
         except Exception: pass
+            
+    # 2. FALLBACK: Download from Cloud only if local file is missing
+    cloud_data = fetch_cloud_data()
+    if cloud_data:
+        # Save a local copy so the next reboot is instant
+        try:
+            with open(DB_FILE, "w") as f:
+                json.dump(cloud_data, f)
+        except: pass
+        return cloud_data
         
     return {
         "vault": {}, 
@@ -137,7 +144,9 @@ if 'db_loaded' not in st.session_state:
     st.session_state['quiz_history_log'] = saved_data.get('quiz_history_log', [])
     st.session_state['recycle_bin'] = saved_data.get('recycle_bin', {"subjects": {}, "chapters": {}, "files": {}})
     st.session_state['db_loaded'] = True
-    if saved_data.get('vault'):
+    
+    # Auto-migrate legacy Google Sheets data to new Dropbox database if needed
+    if saved_data.get('vault') and not os.path.exists(DB_FILE):
         save_data_to_cloud(saved_data)
 
 if 'active_quiz' not in st.session_state: st.session_state['active_quiz'] = None
@@ -502,7 +511,6 @@ with tab_quiz:
         for i, q in enumerate(st.session_state['active_quiz']):
             st.markdown(f"**Q{i+1}.** <span style='color:#007BFF;'>[{q.get('type', 'MCQ')}]</span> {q['question']}", unsafe_allow_html=True)
             
-            # The key parameter ensures selections are NEVER lost even if you change tabs
             radio_key = f"ans_{q['id']}_{i}"
             ans[i] = st.radio(f"Opt {i}", options=["Skip"] + [f"{k}) {v}" for k,v in q['options'].items()], key=radio_key, label_visibility="collapsed")
             st.write("---")
@@ -513,7 +521,6 @@ with tab_quiz:
                 st.session_state['quiz_submitted'] = True
                 correct, wrong, skipped = 0, 0, 0
                 
-                # Retrieve active chapters from pool
                 pool_chaps = list(set([q.get('chapter', 'General') for q in st.session_state['active_quiz']]))
                 c_perf = {c: {"correct": 0, "incorrect": 0} for c in pool_chaps}
                 wrong_details = []
@@ -543,7 +550,6 @@ with tab_quiz:
                         
                 net = (correct * config['marks']) - (wrong * config['penalty'])
                 
-                # Grab the original subject used to generate this specific test
                 origin_sub = st.session_state['active_quiz'][0].get('subject', 'General')
                 
                 test_count = len([x for x in st.session_state['quiz_history_log'] if x.get('subject') == origin_sub]) + 1
