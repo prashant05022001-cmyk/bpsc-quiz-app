@@ -92,7 +92,6 @@ def upload_pdf_to_dropbox(file_bytes, file_name):
         st.error(f"📦 Dropbox PDF Sync Error: {e}")
         return None
 
-# LAZY LOAD: Offload heavy text to distinct invisible .txt files
 def upload_text_to_dropbox(text_data, file_name):
     try:
         if "DROPBOX_TOKEN" in st.secrets:
@@ -121,7 +120,6 @@ def fetch_subject_text_from_dropbox(files_list):
     except Exception: pass
     return text_buffer
 
-# AUTO-MIGRATOR: Shrinks massive legacy JSON files automatically
 def auto_migrate_monolithic_data():
     migrated = False
     vault = st.session_state.get('vault', {})
@@ -133,7 +131,7 @@ def auto_migrate_monolithic_data():
             if success:
                 if "files" not in data: data["files"] = []
                 if safe_name not in data["files"]: data["files"].append(safe_name)
-                data["content"] = "" # Strip from primary DB
+                data["content"] = "" 
                 migrated = True
     if migrated:
         save_data()
@@ -269,12 +267,17 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, vau
     Elite Civil Services Examiner Mode. Generate {count} distinct questions for Subject: {subject} | Chapters: {', '.join(chapters)}.
     Difficulty: {difficulty}. Formats: {', '.join(item_types)}. Source Material context: {relevant_context}
 
-    CRITICAL EXAM ORIENTATION: Modeled questions must strictly follow the patterns, trends, and analytical depth of UPSC CSE, BPSC, and State PCS Prelims Previous Year Questions (PYQs). Focus heavily on multi-statement evaluations, assertion-reasoning, and conceptual clarity.
-
-    CRITICAL INSTRUCTION FOR 'explanation': Do NOT just explain the correct option. You MUST provide a COMPREHENSIVE, multi-paragraph revision summary of the ENTIRE core topic mentioned in the question based strictly on the provided context. 
+    CRITICAL EXAM ORIENTATION:
+    1. Heavy Factual Focus: Questions must test hard factual knowledge, exact dates/years of historical milestones, chronological ordering of events, and data points—matching the traditional preliminary framework of UPSC, BPSC, and State PCS.
+    2. Modern Statements Pairing Format: For multi-statement questions, construct individual points (Statement 1, Statement 2, etc.) and format options exactly like this:
+       - A) Only one statement is correct
+       - B) Only two statements are correct
+       - C) Only three statements are correct
+       - D) All of the statements are correct / None of the statements are correct
+    3. Comprehensive Topic Mastery: Do NOT just explain the correct option. The 'explanation' field must deliver a massive, multi-paragraph revision block encompassing all core background details of that complete topic.
 
     Return JSON array exactly:
-    [ {{"id": {random.randint(10000,99999)}, "type": "MCQ", "chapter": "{chapters[0] if chapters else 'General'}", "question": "Q?", "options": {{"A": "1", "B": "2", "C": "3", "D": "4"}}, "correct": "A", "explanation": "Massive detailed topic summary here...", "extra_info": "Fact."}} ]
+    [ {{"id": {random.randint(10000,99999)}, "type": "MCQ", "chapter": "{chapters[0] if chapters else 'General'}", "question": "Q?", "options": {{"A": "...", "B": "...", "C": "...", "D": "..."}}, "correct": "A", "explanation": "Massive detailed topic summary here...", "extra_info": "Fact."}} ]
     """
     
     safety_settings = [
@@ -329,15 +332,31 @@ def get_active_chapters(subject):
             
     return sorted(list(set(active_chaps)))
 
-def get_chapter_file_link(subject, chapter):
-    if not subject or not chapter: return None, None
+# SMART LINK ROUTER: Bulletproof fallback matching logic
+def get_chapter_file_links_formatted(subject, chapter):
+    if not subject: return ""
     sub_data = st.session_state['vault'].get(subject, {})
     mapping = sub_data.get("file_chapter_mapping", {})
     links = sub_data.get("file_links", {})
-    for f_name, chaps in mapping.items():
-        if chapter in chaps:
-            return f_name, links.get(f_name)
-    return None, None
+    
+    # 1. Try robust partial text mapping
+    if chapter:
+        clean_chap = str(chapter).strip().lower()
+        for f_name, chaps in mapping.items():
+            for c in chaps:
+                if clean_chap in str(c).strip().lower() or str(c).strip().lower() in clean_chap:
+                    link = links.get(f_name)
+                    if link:
+                        return f"🔗 **Dive Deeper:** [Read Chapter/Topic in {f_name}]({link})"
+    
+    # 2. Fallback: List all uploaded textbooks for this specific subject loop
+    all_links = []
+    for f_name, link in links.items():
+        if link:
+            all_links.append(f"[{f_name}]({link})")
+    if all_links:
+        return f"📚 **Subject Material:** Revise from " + ", ".join(all_links)
+    return ""
 
 # --- 7. APP LAYOUT ---
 st.title("📚 Civil Services Smart Quiz Dashboard")
@@ -352,9 +371,6 @@ st.write("---")
 tab_quiz, tab_analytics, tab_history, tab_settings = st.tabs(["🎯 Live Simulator", "📊 Analytics Hub", "🗄️ Question Bank", "⚙️ Vault Management"])
 
 with tab_quiz:
-    # ---------------------------------------------
-    # SETUP MODE 
-    # ---------------------------------------------
     if not st.session_state['exam_mode']:
         st.header("1. Sync Content Vault")
         existing_subs = list(st.session_state['vault'].keys())
@@ -420,8 +436,6 @@ with tab_quiz:
                                 cloud_link = upload_pdf_to_dropbox(f.getvalue(), f.name)
                                 if cloud_link:
                                     st.session_state['vault'][sub_input]["file_links"][f.name] = cloud_link
-                                    
-                                    # DECOUPLED SAVE: Send massive text straight to Dropbox, skip primary JSON
                                     if not upload_text_to_dropbox(t, f.name):
                                         st.session_state['vault'][sub_input]["content"] += "\n" + t
                                         
@@ -490,8 +504,6 @@ with tab_quiz:
         if st.button("Generate Question Deck 🔥", use_container_width=True):
             if sel_chaps:
                 with st.spinner("Dynamically compiling specific study materials..."):
-                    
-                    # LAZY LOADING TEXT: Only pull specific text files precisely when generating questions
                     if sub_input == "All Subjects":
                         v_text = ""
                         for s in existing_subs:
@@ -538,12 +550,12 @@ with tab_quiz:
                         st.session_state['test_config'] = {"marks": marks_per_q, "penalty": neg_mark_val}
                         st.rerun()
                     else:
-                        st.error("No questions available. Either generate new ones with AI (check your quota) or select chapters you have previously tested.")
+                        st.error("No questions available. Check your configuration or parameters.")
             else:
                 st.error("Please select at least one chapter.")
 
     # ---------------------------------------------
-    # EXAM MODE (Full Screen Chamber View)
+    # EXAM MODE 
     # ---------------------------------------------
     else:
         st.header("3. Examination Chamber")
@@ -573,7 +585,6 @@ with tab_quiz:
             """
             components.html(timer_html, height=90)
         
-        ans = {}
         for i, q in enumerate(st.session_state['active_quiz']):
             st.markdown(f"**Q{i+1}.** <span style='color:#007BFF;'>[{q.get('type', 'MCQ')}]</span> {q['question']}", unsafe_allow_html=True)
             
@@ -702,9 +713,10 @@ with tab_quiz:
                     if q.get('extra_info'):
                         st.markdown(f"💡 *Strategic Point:* {q.get('extra_info')}")
                     
-                    f_name, f_link = get_chapter_file_link(origin_sub, q.get('chapter'))
-                    if f_link:
-                        st.markdown(f"🔗 **Dive Deeper:** [Read '{q.get('chapter')}' directly in {f_name}]({f_link})")
+                    # Direct Link Integration via Smart Router
+                    ref_links = get_chapter_file_links_formatted(origin_sub, q.get('chapter'))
+                    if ref_links:
+                        st.markdown(ref_links)
                         
                 st.write("---")
 
@@ -811,9 +823,10 @@ with tab_analytics:
                                                     st.markdown(f"**Q:** {wq['question']}")
                                                     st.info(f"**Concept:** {wq['explanation']}")
                                                     
-                                                    f_name, f_link = get_chapter_file_link(sub, w_c)
-                                                    if f_link:
-                                                        st.markdown(f"🔗 **Revise Source Material:** [Jump to {f_name}]({f_link})")
+                                                    # Direct Link Integration via Smart Router
+                                                    ref_links = get_chapter_file_links_formatted(sub, w_c)
+                                                    if ref_links:
+                                                        st.markdown(ref_links)
                                                     st.write("---")
 
                             with cB:
@@ -855,9 +868,10 @@ with tab_history:
                                     if item.get('extra_info'):
                                         st.markdown(f"💡 *Strategic Point:* {item.get('extra_info')}")
                                     
-                                    f_name, f_link = get_chapter_file_link(s_tab, item.get('chapter'))
-                                    if f_link:
-                                        st.markdown(f"🔗 **Source Book:** [Review Chapter in {f_name}]({f_link})")
+                                    # Direct Link Integration via Smart Router
+                                    ref_links = get_chapter_file_links_formatted(s_tab, item.get('chapter'))
+                                    if ref_links:
+                                        st.markdown(ref_links)
                                 st.write("---")
                                 
                         with rt_tab:
@@ -870,16 +884,16 @@ with tab_history:
                                     if item.get('extra_info'):
                                         st.markdown(f"💡 *Strategic Point:* {item.get('extra_info')}")
                                     
-                                    f_name, f_link = get_chapter_file_link(s_tab, item.get('chapter'))
-                                    if f_link:
-                                        st.markdown(f"🔗 **Source Book:** [Review Chapter in {f_name}]({f_link})")
+                                    # Direct Link Integration via Smart Router
+                                    ref_links = get_chapter_file_links_formatted(s_tab, item.get('chapter'))
+                                    if ref_links:
+                                        st.markdown(ref_links)
                                 st.write("---")
     else:
         st.write("Storage registers empty.")
 
 with tab_settings:
     st.header("⚙️ Vault Management & Database Control")
-    
     if "recycle_bin" not in st.session_state:
         st.session_state["recycle_bin"] = {"subjects": {}, "chapters": {}, "files": {}}
         
@@ -962,8 +976,6 @@ with tab_settings:
                 
         st.write("---")
         st.subheader("♻️ The Recycle Recovery Vault")
-        st.write("Select any previously deleted components to restore them completely back to your active study loop.")
-        
         rec_c1, rec_c2, rec_c3 = st.columns(3)
         
         with rec_c1:
@@ -998,7 +1010,7 @@ with tab_settings:
                         st.success(f"Restored chapter back to {r_sub_c}!")
                         time.sleep(1)
                         st.rerun()
-                    else: st.error("Parent subject structure missing. Recover the subject first.")
+                    else: st.error("Structure missing.")
             else: st.caption("Chapter bin empty.")
                 
         with rec_c3:
@@ -1007,10 +1019,8 @@ with tab_settings:
             active_sub_f_bin = [s for s in sub_f_bin if st.session_state['recycle_bin']["files"][s]]
             if active_sub_f_bin:
                 r_sub_f = st.selectbox("Choose Subject context:", active_sub_f_bin, key="rec_f_sub")
-                
                 raw_bin_options = st.session_state['recycle_bin']["files"][r_sub_f]
                 formatted_options = [f["name"] if isinstance(f, dict) else f for f in raw_bin_options]
-                
                 selected_f_name = st.selectbox("Select PDF to Recover:", formatted_options)
                 
                 if st.button("Recover PDF link"):
@@ -1031,16 +1041,15 @@ with tab_settings:
                         
                         st.session_state['vault'][r_sub_f]["files"].append(selected_f_name)
                         st.session_state['vault'][r_sub_f]["file_chapter_mapping"][selected_f_name] = target_element["mapped_chapters"]
-                        
                         if target_element.get("dropbox_link"):
                             st.session_state['vault'][r_sub_f]["file_links"][selected_f_name] = target_element["dropbox_link"]
                         
                         st.session_state['recycle_bin']["files"][r_sub_f].remove(item)
                         save_data()
-                        st.success(f"Linked reference file and restored its chapters back to {r_sub_f}!")
+                        st.success(f"Linked reference file back to {r_sub_f}!")
                         time.sleep(1)
                         st.rerun()
-                    else: st.error("Parent subject structure missing.")
+                    else: st.error("Parent structure missing.")
             else: st.caption("File link bin empty.")
 
     with t2:
@@ -1075,8 +1084,6 @@ with tab_settings:
 
     with t3:
         st.subheader("✏️ Mass Rename Subjects & Chapters")
-        st.write("Update names here and the system will automatically relink your entire Question Bank and Analytics history to the new name.")
-        
         ren_col1, ren_col2 = st.columns(2)
         subs_list_ren = list(st.session_state['vault'].keys())
         
