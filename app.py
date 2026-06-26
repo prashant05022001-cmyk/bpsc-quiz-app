@@ -10,8 +10,6 @@ import datetime
 import pandas as pd
 import plotly.express as px
 import os
-import gspread
-from google.oauth2.service_account import Credentials
 import dropbox
 import re
 
@@ -20,28 +18,28 @@ st.set_page_config(page_title="Civil Services Smart Quiz Dashboard", page_icon="
 
 st.markdown("""
 <style>
-    /* Boost global font sizes for better readability */
+    /* Textbook-style massive font sizes for readability */
     html, body, [class*="css"] {
-        font-size: 18px !important;
+        font-size: 20px !important;
     }
     .stMarkdown p, .stMarkdown li {
-        font-size: 1.15rem !important;
-        line-height: 1.6 !important;
+        font-size: 1.35rem !important;
+        line-height: 1.7 !important;
     }
     .stRadio label {
-        font-size: 1.15rem !important;
-        line-height: 1.5 !important;
+        font-size: 1.35rem !important;
+        line-height: 1.7 !important;
     }
     .streamlit-expanderHeader {
-        font-size: 1.15rem !important;
+        font-size: 1.25rem !important;
         font-weight: bold !important;
     }
     .stAlert p {
-        font-size: 1.1rem !important;
+        font-size: 1.15rem !important;
     }
     h1 { font-size: 2.5rem !important; }
     h2 { font-size: 2.0rem !important; }
-    h3 { font-size: 1.5rem !important; }
+    h3 { font-size: 1.6rem !important; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -54,35 +52,8 @@ def get_clean_data():
         "recycle_bin": st.session_state.get('recycle_bin', {"subjects": {}, "chapters": {}, "files": {}})
     }
 
-# --- 2. CLOUD CONNECTIONS (DROPBOX & GOOGLE SHEETS) ---
-@st.cache_resource(show_spinner=False)
-def get_gspread_client():
-    try:
-        if "GSPREAD_JSON" not in st.secrets or "SHEET_ID" not in st.secrets:
-            return None, None
-        json_creds = json.loads(st.secrets["GSPREAD_JSON"])
-        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-        creds = Credentials.from_service_account_info(json_creds).with_scopes(scopes)
-        client = gspread.authorize(creds)
-        return client, st.secrets["SHEET_ID"]
-    except Exception:
-        return None, None
-
-def fetch_legacy_google_sheets():
-    """RESCUE BRIDGE: Fetches old data stranded in Google Sheets."""
-    client, sheet_id = get_gspread_client()
-    if client:
-        try:
-            records = client.open_by_key(sheet_id).sheet1.col_values(1)
-            if records:
-                val = "".join(records)
-                return json.loads(val)
-        except Exception:
-            pass
-    return None
-
+# --- 2. LIGHTNING CLOUD DATABASE (DROPBOX) ---
 def save_data_to_cloud(data):
-    """Saves ONLY to lightning-fast Dropbox."""
     try:
         if "DROPBOX_TOKEN" in st.secrets:
             dbx = dropbox.Dropbox(st.secrets["DROPBOX_TOKEN"])
@@ -108,13 +79,16 @@ def upload_pdf_to_dropbox(file_bytes, file_name):
             return None
         dbx = dropbox.Dropbox(st.secrets["DROPBOX_TOKEN"])
         path = f"/{file_name}"
+        
         dbx.files_upload(file_bytes, path, mode=dropbox.files.WriteMode.overwrite)
+        
         try:
             link_info = dbx.sharing_create_shared_link_with_settings(path)
             raw_url = link_info.url
         except dropbox.exceptions.ApiError:
             links = dbx.sharing_list_shared_links(path, direct_only=True).links
             raw_url = links[0].url if links else None
+            
         if raw_url:
             return raw_url.replace("?dl=0", "?dl=1")
         return None
@@ -122,7 +96,7 @@ def upload_pdf_to_dropbox(file_bytes, file_name):
         st.error(f"📦 Dropbox PDF Sync Error: {e}")
         return None
 
-# --- 3. OPTIMIZED STORAGE LOGIC (RESCUE ENABLED) ---
+# --- 3. OPTIMIZED STORAGE LOGIC (LOCAL FIRST) ---
 DB_FILE = "database.json"
 
 def load_data():
@@ -131,28 +105,19 @@ def load_data():
         try:
             with open(DB_FILE, "r") as f:
                 data = json.load(f)
-                if data and data.get("vault"):
-                    if "recycle_bin" not in data: data["recycle_bin"] = {"subjects": {}, "chapters": {}, "files": {}}
-                    return data
+                if "recycle_bin" not in data:
+                    data["recycle_bin"] = {"subjects": {}, "chapters": {}, "files": {}}
+                return data
         except Exception: pass
             
-    # 2. DROPBOX CLOUD: Download if local file is missing
+    # 2. FALLBACK: Download from Cloud only if local file is missing
     cloud_data = fetch_cloud_data()
-    if cloud_data and cloud_data.get("vault"):
+    if cloud_data:
         try:
-            with open(DB_FILE, "w") as f: json.dump(cloud_data, f)
+            with open(DB_FILE, "w") as f:
+                json.dump(cloud_data, f)
         except: pass
         return cloud_data
-
-    # 3. RESCUE BRIDGE: If Dropbox is empty, pull from legacy Google Sheets!
-    legacy_data = fetch_legacy_google_sheets()
-    if legacy_data and legacy_data.get("vault"):
-        st.toast("🔄 Rescuing your data from Google Sheets and moving it to Dropbox...", icon="🚀")
-        try:
-            with open(DB_FILE, "w") as f: json.dump(legacy_data, f)
-        except: pass
-        save_data_to_cloud(legacy_data) # Secure it in Dropbox permanently
-        return legacy_data
         
     return {
         "vault": {}, 
@@ -178,11 +143,15 @@ if 'db_loaded' not in st.session_state:
     st.session_state['quiz_history_log'] = saved_data.get('quiz_history_log', [])
     st.session_state['recycle_bin'] = saved_data.get('recycle_bin', {"subjects": {}, "chapters": {}, "files": {}})
     st.session_state['db_loaded'] = True
+    
+    if saved_data.get('vault') and not os.path.exists(DB_FILE):
+        save_data_to_cloud(saved_data)
 
 if 'active_quiz' not in st.session_state: st.session_state['active_quiz'] = None
 if 'quiz_submitted' not in st.session_state: st.session_state['quiz_submitted'] = False
 if 'exam_mode' not in st.session_state: st.session_state['exam_mode'] = False
 if 'test_config' not in st.session_state: st.session_state['test_config'] = {"marks": 1.0, "penalty": 0.33}
+if 'exam_answers' not in st.session_state: st.session_state['exam_answers'] = {}
 
 # --- 5. API CONFIGURATION ---
 try:
@@ -489,6 +458,7 @@ with tab_quiz:
                         random.shuffle(pool)
                         
                         st.session_state['active_quiz'] = pool
+                        st.session_state['exam_answers'] = {}  # Clear previous memories
                         st.session_state['quiz_submitted'] = False
                         st.session_state['exam_mode'] = True
                         st.session_state['test_start_time'] = time.time()
@@ -507,12 +477,6 @@ with tab_quiz:
         st.header("3. Examination Chamber")
         
         if not st.session_state['quiz_submitted']:
-            # Abort Button
-            if st.button("🔙 Exit Exam (Return to Setup)"):
-                st.session_state['exam_mode'] = False
-                st.session_state['active_quiz'] = None
-                st.rerun()
-                
             rem = max(0, int(st.session_state.get('target_duration', 600) - (time.time() - st.session_state.get('test_start_time', time.time()))))
             
             timer_html = f"""
@@ -537,17 +501,35 @@ with tab_quiz:
             """
             components.html(timer_html, height=90)
         
-        ans = {}
+        # Examination rendering loop with Tab-Memory protection
         for i, q in enumerate(st.session_state['active_quiz']):
             st.markdown(f"**Q{i+1}.** <span style='color:#007BFF;'>[{q.get('type', 'MCQ')}]</span> {q['question']}", unsafe_allow_html=True)
             
+            # Secure default index tracking
+            if i not in st.session_state['exam_answers']:
+                st.session_state['exam_answers'][i] = "Skip"
+                
+            options = ["Skip"] + [f"{k}) {v}" for k,v in q['options'].items()]
+            
+            try:
+                def_idx = options.index(st.session_state['exam_answers'][i])
+            except ValueError:
+                def_idx = 0
+                
             radio_key = f"ans_{q['id']}_{i}"
-            ans[i] = st.radio(f"Opt {i}", options=["Skip"] + [f"{k}) {v}" for k,v in q['options'].items()], key=radio_key, label_visibility="collapsed")
+            
+            # Callback to instantly lock answer into memory
+            def save_ans(idx=i, r_key=radio_key):
+                st.session_state['exam_answers'][idx] = st.session_state[r_key]
+
+            st.radio(f"Opt {i}", options=options, key=radio_key, index=def_idx, on_change=save_ans, label_visibility="collapsed")
             st.write("---")
 
         if not st.session_state['quiz_submitted']:
             st.write("")
-            if st.button("Submit Assessment & Evaluate", type="primary", use_container_width=True):
+            
+            # Primary End Test Button
+            if st.button("🛑 End Test & Submit Assessment", type="primary", use_container_width=True):
                 st.session_state['quiz_submitted'] = True
                 correct, wrong, skipped = 0, 0, 0
                 
@@ -562,9 +544,13 @@ with tab_quiz:
                     if qc not in c_perf: c_perf[qc] = {"correct": 0, "incorrect": 0}
                     
                     is_correct = False
-                    if ans[i] == "Skip": 
+                    
+                    # Pull answer from the permanent memory
+                    selected_ans = st.session_state['exam_answers'].get(i, "Skip")
+                    
+                    if selected_ans == "Skip": 
                         skipped += 1
-                    elif ans[i].startswith(q['correct']): 
+                    elif selected_ans.startswith(q['correct']): 
                         correct += 1
                         c_perf[qc]["correct"] += 1
                         is_correct = True
@@ -606,6 +592,14 @@ with tab_quiz:
                 })
                 save_data()
                 st.rerun()
+                
+            st.write("---")
+            if st.button("🗑️ Cancel & Discard Test (Return to Setup)", use_container_width=True):
+                st.session_state['exam_mode'] = False
+                st.session_state['active_quiz'] = None
+                st.session_state['exam_answers'] = {}
+                st.rerun()
+                
         else:
             st.success("📝 Evaluation Complete")
             origin_sub = st.session_state['active_quiz'][0].get('subject', 'General')
@@ -623,17 +617,21 @@ with tab_quiz:
                 st.session_state['exam_mode'] = False
                 st.session_state['active_quiz'] = None
                 st.session_state['quiz_submitted'] = False
+                st.session_state['exam_answers'] = {}
                 st.rerun()
 
             st.write("---")
             for i, q in enumerate(st.session_state['active_quiz']):
                 st.markdown(f"**Q{i+1}:** {q['question']}")
+                
+                selected_ans = st.session_state['exam_answers'].get(i, "Skip")
+                
                 for k, v in q['options'].items():
                     if k == q['correct']: st.markdown(f"🟩 **{k}) {v} (Correct Key)**")
-                    elif ans[i].startswith(k) and ans[i] != "Skip": st.markdown(f"🟥 **{k}) {v} (Your Pick)**")
+                    elif selected_ans.startswith(k) and selected_ans != "Skip": st.markdown(f"🟥 **{k}) {v} (Your Pick)**")
                     else: st.markdown(f"⚪ {k}) {v}")
                 with st.expander("📘 Comprehensive Topic Mastery (Complete Revision)"):
-                    st.markdown(f"{q['explanation']}")
+                    st.markdown(f"{q.get('explanation', '')}")
                     st.markdown(f"💡 *Strategic Point:* {q.get('extra_info','')}")
                 st.write("---")
 
@@ -774,13 +772,20 @@ with tab_history:
                                 for k, v in item['options'].items():
                                     mark = "🟩" if k == item['correct'] else "⚪"
                                     st.write(f"{mark} {k}) {v}")
-                                st.info(f"**Explanation:** {item['explanation']}")
+                                with st.expander("📘 Comprehensive Topic Mastery (Complete Revision)"):
+                                    st.markdown(f"{item.get('explanation', '')}")
+                                    if item.get('extra_info'):
+                                        st.markdown(f"💡 *Strategic Point:* {item.get('extra_info')}")
                                 st.write("---")
                                 
                         with rt_tab:
                             for item in reversed(right_qs):
                                 st.markdown(f"**[{item.get('test_ref', 'Bank')}]** {item['question']}")
                                 st.success(f"Correct Answer: {item['correct']} - {item['options'].get(item['correct'])}")
+                                with st.expander("📘 Comprehensive Topic Mastery (Complete Revision)"):
+                                    st.markdown(f"{item.get('explanation', '')}")
+                                    if item.get('extra_info'):
+                                        st.markdown(f"💡 *Strategic Point:* {item.get('extra_info')}")
                                 st.write("---")
     else:
         st.write("Storage registers empty.")
