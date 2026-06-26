@@ -194,7 +194,6 @@ def get_chapters_from_ai(text_chunk, subject_name, retries=3):
                 return list(dict.fromkeys(valid_chaps))
                 
         except Exception as e:
-            # UNMASKED: Printing the exact error message to the UI so we can diagnose the issue
             st.error(f"🚨 Background Gemini API Alert (Attempt {attempt+1}/{retries}): {e}")
             if "429" in str(e) or "Quota" in str(e): 
                 time.sleep(15)
@@ -635,7 +634,7 @@ with tab_analytics:
                                 for rank, (wc, wacc) in enumerate(top_3_weakest):
                                     st.write(f"{rank+1}. **{wc}** *(Accuracy: {wacc:.1f}%)*")
                             else:
-                                .info("Need more test data for detailed weakness analytics.")
+                                st.info("Need more test data for detailed weakness analytics.")
                         with sc2:
                             pie_df = pd.DataFrame({"Outcome": ["Correct", "Wrong", "Skipped"], "Count": [t_cor, t_wrg, t_skp]})
                             fig = px.pie(pie_df, values='Count', names='Outcome', color='Outcome', color_discrete_map={"Correct": "green", "Wrong": "red", "Skipped": "gray"})
