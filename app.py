@@ -18,7 +18,6 @@ st.set_page_config(page_title="Civil Services Smart Quiz Dashboard", page_icon="
 
 st.markdown("""
 <style>
-    /* Textbook-style massive font sizes for readability */
     html, body, [class*="css"] {
         font-size: 20px !important;
     }
@@ -52,7 +51,7 @@ def get_clean_data():
         "recycle_bin": st.session_state.get('recycle_bin', {"subjects": {}, "chapters": {}, "files": {}})
     }
 
-# --- 2. LIGHTNING CLOUD DATABASE (DROPBOX) ---
+# --- 2. CLOUD DATABASE (DROPBOX - DECOUPLED) ---
 def save_data_to_cloud(data):
     try:
         if "DROPBOX_TOKEN" in st.secrets:
@@ -79,22 +78,65 @@ def upload_pdf_to_dropbox(file_bytes, file_name):
             return None
         dbx = dropbox.Dropbox(st.secrets["DROPBOX_TOKEN"])
         path = f"/{file_name}"
-        
         dbx.files_upload(file_bytes, path, mode=dropbox.files.WriteMode.overwrite)
-        
         try:
             link_info = dbx.sharing_create_shared_link_with_settings(path)
             raw_url = link_info.url
         except dropbox.exceptions.ApiError:
             links = dbx.sharing_list_shared_links(path, direct_only=True).links
             raw_url = links[0].url if links else None
-            
         if raw_url:
             return raw_url.replace("?dl=0", "?dl=1")
         return None
     except Exception as e:
         st.error(f"📦 Dropbox PDF Sync Error: {e}")
         return None
+
+# LAZY LOAD: Offload heavy text to distinct invisible .txt files
+def upload_text_to_dropbox(text_data, file_name):
+    try:
+        if "DROPBOX_TOKEN" in st.secrets:
+            dbx = dropbox.Dropbox(st.secrets["DROPBOX_TOKEN"])
+            safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', file_name)
+            path = f"/Vault_Texts/{safe_name}.txt"
+            dbx.files_upload(text_data.encode('utf-8'), path, mode=dropbox.files.WriteMode.overwrite)
+            return True
+    except Exception:
+        pass
+    return False
+
+def fetch_subject_text_from_dropbox(files_list):
+    text_buffer = ""
+    try:
+        if "DROPBOX_TOKEN" in st.secrets:
+            dbx = dropbox.Dropbox(st.secrets["DROPBOX_TOKEN"])
+            for f_name in files_list:
+                safe_name = re.sub(r'[^a-zA-Z0-9_\-\.]', '_', f_name)
+                path = f"/Vault_Texts/{safe_name}.txt"
+                try:
+                    _, res = dbx.files_download(path)
+                    text_buffer += res.content.decode('utf-8') + "\n"
+                except Exception:
+                    pass
+    except Exception: pass
+    return text_buffer
+
+# AUTO-MIGRATOR: Shrinks massive legacy JSON files automatically
+def auto_migrate_monolithic_data():
+    migrated = False
+    vault = st.session_state.get('vault', {})
+    for sub, data in vault.items():
+        if "content" in data and len(data["content"]) > 1000:
+            st.toast(f"Optimizing heavy background data for {sub}...", icon="🚀")
+            safe_name = f"{sub}_Legacy_Archive"
+            success = upload_text_to_dropbox(data["content"], safe_name)
+            if success:
+                if "files" not in data: data["files"] = []
+                if safe_name not in data["files"]: data["files"].append(safe_name)
+                data["content"] = "" # Strip from primary DB
+                migrated = True
+    if migrated:
+        save_data()
 
 # --- 3. OPTIMIZED STORAGE LOGIC (LOCAL FIRST) ---
 DB_FILE = "database.json"
@@ -114,7 +156,7 @@ def load_data():
         try:
             with open(DB_FILE, "w") as f:
                 json.dump(cloud_data, f)
-        except: pass
+        except Exception: pass
         return cloud_data
         
     return {
@@ -150,6 +192,10 @@ if 'quiz_submitted' not in st.session_state: st.session_state['quiz_submitted'] 
 if 'exam_mode' not in st.session_state: st.session_state['exam_mode'] = False
 if 'test_config' not in st.session_state: st.session_state['test_config'] = {"marks": 1.0, "penalty": 0.33}
 if 'exam_answers' not in st.session_state: st.session_state['exam_answers'] = {}
+
+if 'migration_done' not in st.session_state:
+    auto_migrate_monolithic_data()
+    st.session_state['migration_done'] = True
 
 # --- 5. API CONFIGURATION ---
 try:
@@ -219,12 +265,11 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, vau
                 relevant_context += "\n... " + vault_full_text[max(0, start_idx-1000) : start_idx+4000]
     relevant_context = relevant_context[:25000]
 
-    # UPDATED EXAM-ORIENTED PROMPT
     prompt = f"""
     Elite Civil Services Examiner Mode. Generate {count} distinct questions for Subject: {subject} | Chapters: {', '.join(chapters)}.
     Difficulty: {difficulty}. Formats: {', '.join(item_types)}. Source Material context: {relevant_context}
 
-    CRITICAL EXAM ORIENTATION: Modeled questions must strictly follow the patterns, trends, and analytical depth of UPSC CSE, BPSC, and State PCS Prelims Previous Year Questions (PYQs). Do NOT generate obscure trivia or irrelevant factual questions. Focus heavily on multi-statement evaluations, assertion-reasoning, and conceptual clarity.
+    CRITICAL EXAM ORIENTATION: Modeled questions must strictly follow the patterns, trends, and analytical depth of UPSC CSE, BPSC, and State PCS Prelims Previous Year Questions (PYQs). Focus heavily on multi-statement evaluations, assertion-reasoning, and conceptual clarity.
 
     CRITICAL INSTRUCTION FOR 'explanation': Do NOT just explain the correct option. You MUST provide a COMPREHENSIVE, multi-paragraph revision summary of the ENTIRE core topic mentioned in the question based strictly on the provided context. 
 
@@ -285,7 +330,6 @@ def get_active_chapters(subject):
     return sorted(list(set(active_chaps)))
 
 def get_chapter_file_link(subject, chapter):
-    """Routing algorithm to link a chapter back to its original PDF"""
     if not subject or not chapter: return None, None
     sub_data = st.session_state['vault'].get(subject, {})
     mapping = sub_data.get("file_chapter_mapping", {})
@@ -309,7 +353,7 @@ tab_quiz, tab_analytics, tab_history, tab_settings = st.tabs(["🎯 Live Simulat
 
 with tab_quiz:
     # ---------------------------------------------
-    # SETUP MODE (Visible only when NOT taking an exam)
+    # SETUP MODE 
     # ---------------------------------------------
     if not st.session_state['exam_mode']:
         st.header("1. Sync Content Vault")
@@ -341,7 +385,9 @@ with tab_quiz:
                 st.info(f"📁 **Active PDFs stored for {sub_input}:**")
                 file_links = st.session_state['vault'].get(sub_input, {}).get("file_links", {})
                 for f in prev_files:
-                    if f in file_links and file_links[f]:
+                    if f == f"{sub_input}_Legacy_Archive":
+                        st.markdown(f"- 📦 *[Archived Text Data]*")
+                    elif f in file_links and file_links[f]:
                         st.markdown(f"- [{f}]({file_links[f]})")
                     else:
                         st.markdown(f"- {f}")
@@ -374,6 +420,11 @@ with tab_quiz:
                                 cloud_link = upload_pdf_to_dropbox(f.getvalue(), f.name)
                                 if cloud_link:
                                     st.session_state['vault'][sub_input]["file_links"][f.name] = cloud_link
+                                    
+                                    # DECOUPLED SAVE: Send massive text straight to Dropbox, skip primary JSON
+                                    if not upload_text_to_dropbox(t, f.name):
+                                        st.session_state['vault'][sub_input]["content"] += "\n" + t
+                                        
                                     if ch:
                                         st.success(f"✅ Extracted {len(ch)} chapters and saved '{f.name}' to Cloud!")
                                     else:
@@ -384,7 +435,6 @@ with tab_quiz:
                                     else:
                                         st.error(f"❌ Failed to extract chapters AND failed to upload '{f.name}'.")
 
-                                st.session_state['vault'][sub_input]["content"] += "\n" + t
                                 st.session_state['vault'][sub_input]["files"].append(f.name)
                                 time.sleep(1)
                                 
@@ -439,9 +489,19 @@ with tab_quiz:
 
         if st.button("Generate Question Deck 🔥", use_container_width=True):
             if sel_chaps:
-                with st.spinner("Compiling comprehensive questions..."):
-                    if sub_input == "All Subjects": v_text = "\n".join([st.session_state['vault'][s].get("content", "") for s in existing_subs])
-                    else: v_text = st.session_state['vault'][sub_input].get("content", "")
+                with st.spinner("Dynamically compiling specific study materials..."):
+                    
+                    # LAZY LOADING TEXT: Only pull specific text files precisely when generating questions
+                    if sub_input == "All Subjects":
+                        v_text = ""
+                        for s in existing_subs:
+                            legacy = st.session_state['vault'][s].get("content", "")
+                            cloud_text = fetch_subject_text_from_dropbox(st.session_state['vault'][s].get("files", []))
+                            v_text += legacy + "\n" + cloud_text
+                    else:
+                        legacy = st.session_state['vault'][sub_input].get("content", "")
+                        cloud_text = fetch_subject_text_from_dropbox(st.session_state['vault'][sub_input].get("files", []))
+                        v_text = legacy + "\n" + cloud_text
                         
                     matching_old = [q for q in st.session_state['old_questions'] if q.get('chapter') in sel_chaps]
                     
@@ -642,7 +702,6 @@ with tab_quiz:
                     if q.get('extra_info'):
                         st.markdown(f"💡 *Strategic Point:* {q.get('extra_info')}")
                     
-                    # Direct Link Integration
                     f_name, f_link = get_chapter_file_link(origin_sub, q.get('chapter'))
                     if f_link:
                         st.markdown(f"🔗 **Dive Deeper:** [Read '{q.get('chapter')}' directly in {f_name}]({f_link})")
@@ -752,7 +811,6 @@ with tab_analytics:
                                                     st.markdown(f"**Q:** {wq['question']}")
                                                     st.info(f"**Concept:** {wq['explanation']}")
                                                     
-                                                    # Direct Link Integration
                                                     f_name, f_link = get_chapter_file_link(sub, w_c)
                                                     if f_link:
                                                         st.markdown(f"🔗 **Revise Source Material:** [Jump to {f_name}]({f_link})")
@@ -797,7 +855,6 @@ with tab_history:
                                     if item.get('extra_info'):
                                         st.markdown(f"💡 *Strategic Point:* {item.get('extra_info')}")
                                     
-                                    # Direct Link Integration
                                     f_name, f_link = get_chapter_file_link(s_tab, item.get('chapter'))
                                     if f_link:
                                         st.markdown(f"🔗 **Source Book:** [Review Chapter in {f_name}]({f_link})")
@@ -813,7 +870,6 @@ with tab_history:
                                     if item.get('extra_info'):
                                         st.markdown(f"💡 *Strategic Point:* {item.get('extra_info')}")
                                     
-                                    # Direct Link Integration
                                     f_name, f_link = get_chapter_file_link(s_tab, item.get('chapter'))
                                     if f_link:
                                         st.markdown(f"🔗 **Source Book:** [Review Chapter in {f_name}]({f_link})")
