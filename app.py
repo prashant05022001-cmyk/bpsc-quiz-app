@@ -100,7 +100,6 @@ def upload_pdf_to_dropbox(file_bytes, file_name):
 DB_FILE = "database.json"
 
 def load_data():
-    # 1. LIGHTNING FAST: Try Local Hard Drive First
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r") as f:
@@ -110,7 +109,6 @@ def load_data():
                 return data
         except Exception: pass
             
-    # 2. FALLBACK: Download from Cloud only if local file is missing
     cloud_data = fetch_cloud_data()
     if cloud_data:
         try:
@@ -221,9 +219,12 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, vau
                 relevant_context += "\n... " + vault_full_text[max(0, start_idx-1000) : start_idx+4000]
     relevant_context = relevant_context[:25000]
 
+    # UPDATED EXAM-ORIENTED PROMPT
     prompt = f"""
     Elite Civil Services Examiner Mode. Generate {count} distinct questions for Subject: {subject} | Chapters: {', '.join(chapters)}.
     Difficulty: {difficulty}. Formats: {', '.join(item_types)}. Source Material context: {relevant_context}
+
+    CRITICAL EXAM ORIENTATION: Modeled questions must strictly follow the patterns, trends, and analytical depth of UPSC CSE, BPSC, and State PCS Prelims Previous Year Questions (PYQs). Do NOT generate obscure trivia or irrelevant factual questions. Focus heavily on multi-statement evaluations, assertion-reasoning, and conceptual clarity.
 
     CRITICAL INSTRUCTION FOR 'explanation': Do NOT just explain the correct option. You MUST provide a COMPREHENSIVE, multi-paragraph revision summary of the ENTIRE core topic mentioned in the question based strictly on the provided context. 
 
@@ -282,6 +283,17 @@ def get_active_chapters(subject):
             active_chaps.extend(file_mapping[f_name])
             
     return sorted(list(set(active_chaps)))
+
+def get_chapter_file_link(subject, chapter):
+    """Routing algorithm to link a chapter back to its original PDF"""
+    if not subject or not chapter: return None, None
+    sub_data = st.session_state['vault'].get(subject, {})
+    mapping = sub_data.get("file_chapter_mapping", {})
+    links = sub_data.get("file_links", {})
+    for f_name, chaps in mapping.items():
+        if chapter in chaps:
+            return f_name, links.get(f_name)
+    return None, None
 
 # --- 7. APP LAYOUT ---
 st.title("📚 Civil Services Smart Quiz Dashboard")
@@ -458,7 +470,7 @@ with tab_quiz:
                         random.shuffle(pool)
                         
                         st.session_state['active_quiz'] = pool
-                        st.session_state['exam_answers'] = {}  # Clear previous memories
+                        st.session_state['exam_answers'] = {}  
                         st.session_state['quiz_submitted'] = False
                         st.session_state['exam_mode'] = True
                         st.session_state['test_start_time'] = time.time()
@@ -501,11 +513,10 @@ with tab_quiz:
             """
             components.html(timer_html, height=90)
         
-        # Examination rendering loop with Tab-Memory protection
+        ans = {}
         for i, q in enumerate(st.session_state['active_quiz']):
             st.markdown(f"**Q{i+1}.** <span style='color:#007BFF;'>[{q.get('type', 'MCQ')}]</span> {q['question']}", unsafe_allow_html=True)
             
-            # Secure default index tracking
             if i not in st.session_state['exam_answers']:
                 st.session_state['exam_answers'][i] = "Skip"
                 
@@ -518,7 +529,6 @@ with tab_quiz:
                 
             radio_key = f"ans_{q['id']}_{i}"
             
-            # Callback to instantly lock answer into memory
             def save_ans(idx=i, r_key=radio_key):
                 st.session_state['exam_answers'][idx] = st.session_state[r_key]
 
@@ -528,7 +538,6 @@ with tab_quiz:
         if not st.session_state['quiz_submitted']:
             st.write("")
             
-            # Primary End Test Button
             if st.button("🛑 End Test & Submit Assessment", type="primary", use_container_width=True):
                 st.session_state['quiz_submitted'] = True
                 correct, wrong, skipped = 0, 0, 0
@@ -544,8 +553,6 @@ with tab_quiz:
                     if qc not in c_perf: c_perf[qc] = {"correct": 0, "incorrect": 0}
                     
                     is_correct = False
-                    
-                    # Pull answer from the permanent memory
                     selected_ans = st.session_state['exam_answers'].get(i, "Skip")
                     
                     if selected_ans == "Skip": 
@@ -565,7 +572,6 @@ with tab_quiz:
                             break
                         
                 net = (correct * config['marks']) - (wrong * config['penalty'])
-                
                 origin_sub = st.session_state['active_quiz'][0].get('subject', 'General')
                 
                 test_count = len([x for x in st.session_state['quiz_history_log'] if x.get('subject') == origin_sub]) + 1
@@ -630,9 +636,17 @@ with tab_quiz:
                     if k == q['correct']: st.markdown(f"🟩 **{k}) {v} (Correct Key)**")
                     elif selected_ans.startswith(k) and selected_ans != "Skip": st.markdown(f"🟥 **{k}) {v} (Your Pick)**")
                     else: st.markdown(f"⚪ {k}) {v}")
+                
                 with st.expander("📘 Comprehensive Topic Mastery (Complete Revision)"):
                     st.markdown(f"{q.get('explanation', '')}")
-                    st.markdown(f"💡 *Strategic Point:* {q.get('extra_info','')}")
+                    if q.get('extra_info'):
+                        st.markdown(f"💡 *Strategic Point:* {q.get('extra_info')}")
+                    
+                    # Direct Link Integration
+                    f_name, f_link = get_chapter_file_link(origin_sub, q.get('chapter'))
+                    if f_link:
+                        st.markdown(f"🔗 **Dive Deeper:** [Read '{q.get('chapter')}' directly in {f_name}]({f_link})")
+                        
                 st.write("---")
 
 with tab_analytics:
@@ -737,6 +751,11 @@ with tab_analytics:
                                                 for wq in wrong_in_worst:
                                                     st.markdown(f"**Q:** {wq['question']}")
                                                     st.info(f"**Concept:** {wq['explanation']}")
+                                                    
+                                                    # Direct Link Integration
+                                                    f_name, f_link = get_chapter_file_link(sub, w_c)
+                                                    if f_link:
+                                                        st.markdown(f"🔗 **Revise Source Material:** [Jump to {f_name}]({f_link})")
                                                     st.write("---")
 
                             with cB:
@@ -772,20 +791,32 @@ with tab_history:
                                 for k, v in item['options'].items():
                                     mark = "🟩" if k == item['correct'] else "⚪"
                                     st.write(f"{mark} {k}) {v}")
+                                
                                 with st.expander("📘 Comprehensive Topic Mastery (Complete Revision)"):
                                     st.markdown(f"{item.get('explanation', '')}")
                                     if item.get('extra_info'):
                                         st.markdown(f"💡 *Strategic Point:* {item.get('extra_info')}")
+                                    
+                                    # Direct Link Integration
+                                    f_name, f_link = get_chapter_file_link(s_tab, item.get('chapter'))
+                                    if f_link:
+                                        st.markdown(f"🔗 **Source Book:** [Review Chapter in {f_name}]({f_link})")
                                 st.write("---")
                                 
                         with rt_tab:
                             for item in reversed(right_qs):
                                 st.markdown(f"**[{item.get('test_ref', 'Bank')}]** {item['question']}")
                                 st.success(f"Correct Answer: {item['correct']} - {item['options'].get(item['correct'])}")
+                                
                                 with st.expander("📘 Comprehensive Topic Mastery (Complete Revision)"):
                                     st.markdown(f"{item.get('explanation', '')}")
                                     if item.get('extra_info'):
                                         st.markdown(f"💡 *Strategic Point:* {item.get('extra_info')}")
+                                    
+                                    # Direct Link Integration
+                                    f_name, f_link = get_chapter_file_link(s_tab, item.get('chapter'))
+                                    if f_link:
+                                        st.markdown(f"🔗 **Source Book:** [Review Chapter in {f_name}]({f_link})")
                                 st.write("---")
     else:
         st.write("Storage registers empty.")
