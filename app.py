@@ -10,8 +10,6 @@ import datetime
 import pandas as pd
 import plotly.express as px
 import os
-import gspread
-from google.oauth2.service_account import Credentials
 import dropbox
 import re
 
@@ -27,41 +25,28 @@ def get_clean_data():
         "recycle_bin": st.session_state.get('recycle_bin', {"subjects": {}, "chapters": {}, "files": {}})
     }
 
-# --- 2. CLOUD DATABASE CONNECTION LOGIC ---
-@st.cache_resource(show_spinner=False)
-def get_gspread_client():
-    try:
-        if "GSPREAD_JSON" not in st.secrets or "SHEET_ID" not in st.secrets:
-            return None, None
-            
-        json_creds = json.loads(st.secrets["GSPREAD_JSON"])
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
-        creds = Credentials.from_service_account_info(json_creds).with_scopes(scopes)
-        client = gspread.authorize(creds)
-        return client, st.secrets["SHEET_ID"]
-    except Exception:
-        return None, None
-
+# --- 2. LIGHTNING CLOUD DATABASE (DROPBOX) ---
 def save_data_to_cloud(data):
-    client, sheet_id = get_gspread_client()
-    if client and sheet_id:
-        try:
-            sheet = client.open_by_key(sheet_id).sheet1
-            json_str = json.dumps(data, default=str)
-            
-            chunk_size = 45000
-            chunks = [[json_str[i:i+chunk_size]] for i in range(0, len(json_str), chunk_size)]
-            
-            sheet.clear()
-            sheet.update(range_name=f'A1:A{len(chunks)}', values=chunks)
+    try:
+        if "DROPBOX_TOKEN" in st.secrets:
+            dbx = dropbox.Dropbox(st.secrets["DROPBOX_TOKEN"])
+            json_str = json.dumps(data)
+            # Upload the entire database as a single, fast file
+            dbx.files_upload(json_str.encode('utf-8'), "/database.json", mode=dropbox.files.WriteMode.overwrite)
             st.cache_data.clear()
-        except Exception as e:
-            st.error(f"☁️ Cloud Save Error: {e}")
+    except Exception as e:
+        st.error(f"☁️ Cloud Save Error: {e}")
 
-# --- FREE DROPBOX CLOUD STORAGE ---
+@st.cache_data(show_spinner="⚡ Fast-Syncing with Cloud Vault...")
+def fetch_cloud_data():
+    try:
+        if "DROPBOX_TOKEN" in st.secrets:
+            dbx = dropbox.Dropbox(st.secrets["DROPBOX_TOKEN"])
+            _, res = dbx.files_download("/database.json")
+            return json.loads(res.content)
+    except Exception:
+        return None
+
 def upload_pdf_to_dropbox(file_bytes, file_name):
     try:
         if "DROPBOX_TOKEN" not in st.secrets:
@@ -82,30 +67,19 @@ def upload_pdf_to_dropbox(file_bytes, file_name):
             return raw_url.replace("?dl=0", "?dl=1")
         return None
     except Exception as e:
-        st.error(f"📦 Dropbox Sync Error: {e}")
+        st.error(f"📦 Dropbox PDF Sync Error: {e}")
         return None
 
-# --- 3. OPTIMIZED CACHED STORAGE LOGIC ---
+# --- 3. STORAGE LOGIC ---
 DB_FILE = "database.json"
 
-@st.cache_data(show_spinner="⚡ Syncing with Cloud Registry...")
-def fetch_cloud_data():
-    client, sheet_id = get_gspread_client()
-    if client:
-        try:
-            records = client.open_by_key(sheet_id).sheet1.col_values(1)
-            if records:
-                val = "".join(records)
-                return json.loads(val)
-        except Exception:
-            pass
-    return None
-
 def load_data():
+    # Attempt Lightning Cloud Fetch
     cloud_data = fetch_cloud_data()
     if cloud_data:
         return cloud_data
             
+    # Fallback to local file (Migration pathway)
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r") as f:
@@ -139,6 +113,9 @@ if 'db_loaded' not in st.session_state:
     st.session_state['quiz_history_log'] = saved_data.get('quiz_history_log', [])
     st.session_state['recycle_bin'] = saved_data.get('recycle_bin', {"subjects": {}, "chapters": {}, "files": {}})
     st.session_state['db_loaded'] = True
+    # Auto-migrate legacy Google Sheets data to new Dropbox database
+    if saved_data.get('vault'):
+        save_data_to_cloud(saved_data)
 
 if 'active_quiz' not in st.session_state: st.session_state['active_quiz'] = None
 if 'quiz_submitted' not in st.session_state: st.session_state['quiz_submitted'] = False
@@ -277,9 +254,8 @@ def get_active_chapters(subject):
 # --- 7. APP LAYOUT ---
 st.title("📚 Civil Services Smart Quiz Dashboard")
 
-client, _ = get_gspread_client()
-if client:
-    st.sidebar.success("☁️ Cloud Database Active")
+if "DROPBOX_TOKEN" in st.secrets:
+    st.sidebar.success("☁️ Lightning Cloud Active")
 else:
     st.sidebar.warning("⚠️ Local Storage Only")
 
