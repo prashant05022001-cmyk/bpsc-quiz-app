@@ -18,6 +18,7 @@ st.set_page_config(page_title="Civil Services Smart Quiz Dashboard", page_icon="
 
 st.markdown("""
 <style>
+    /* Textbook-style massive font sizes for readability */
     html, body, [class*="css"] {
         font-size: 20px !important;
     }
@@ -190,6 +191,7 @@ if 'quiz_submitted' not in st.session_state: st.session_state['quiz_submitted'] 
 if 'exam_mode' not in st.session_state: st.session_state['exam_mode'] = False
 if 'test_config' not in st.session_state: st.session_state['test_config'] = {"marks": 1.0, "penalty": 0.33}
 if 'exam_answers' not in st.session_state: st.session_state['exam_answers'] = {}
+if 'current_exam_subject' not in st.session_state: st.session_state['current_exam_subject'] = 'General'
 
 if 'migration_done' not in st.session_state:
     auto_migrate_monolithic_data()
@@ -335,37 +337,49 @@ def get_active_chapters(subject):
             
     return sorted(list(set(active_chaps)))
 
-# SMART LINK ROUTER: Bulletproof fallback matching logic with highlighted UI
+# --- NEW: GLOBAL SMART LINK ROUTER ---
 def get_chapter_file_links_formatted(subject, chapter):
-    if not subject: return ""
-    sub_data = st.session_state['vault'].get(subject, {})
-    mapping = sub_data.get("file_chapter_mapping", {})
+    vault = st.session_state.get('vault', {})
+    clean_chap = str(chapter).strip().lower() if chapter else ""
+    
+    # 1. GLOBAL EXACT MATCH: Scan the entire dashboard for the chapter name
+    if clean_chap:
+        for sub, sub_data in vault.items():
+            mapping = sub_data.get("file_chapter_mapping", {})
+            links = sub_data.get("file_links", {})
+            for f_name, chaps in mapping.items():
+                for c in chaps:
+                    if clean_chap in str(c).strip().lower() or str(c).strip().lower() in clean_chap:
+                        link = links.get(f_name)
+                        if link:
+                            # ?raw=1 ensures the PDF opens instantly in the browser instead of downloading
+                            browser_link = link.replace("?dl=0", "?raw=1").replace("?dl=1", "?raw=1")
+                            return f"🔗 **Open Source Book:** [{f_name}]({browser_link}) *(Search index for: '{chapter}')*"
+    
+    # 2. LOCAL FALLBACK: If chapter isn't found, list books for the chosen subject
+    sub_data = vault.get(subject, {})
     links = sub_data.get("file_links", {})
+    if links:
+        all_links = []
+        for f_name, link in links.items():
+            if link:
+                browser_link = link.replace("?dl=0", "?raw=1").replace("?dl=1", "?raw=1")
+                all_links.append(f"[{f_name}]({browser_link})")
+        if all_links:
+            return f"📚 **Subject Material:** " + ", ".join(all_links)
     
-    if not links:
-        return "⚠️ *Source link unavailable. Re-upload this PDF in 'Sync Content Vault' to enable 1-click access.*"
+    # 3. GLOBAL FALLBACK: If the subject is broken/General, list EVERY book you own
+    all_global_links = []
+    for sub, sub_data in vault.items():
+        for f_name, link in sub_data.get("file_links", {}).items():
+            if link:
+                browser_link = link.replace("?dl=0", "?raw=1").replace("?dl=1", "?raw=1")
+                all_global_links.append(f"[{f_name}]({browser_link})")
     
-    # 1. Try robust partial text mapping
-    if chapter:
-        clean_chap = str(chapter).strip().lower()
-        for f_name, chaps in mapping.items():
-            for c in chaps:
-                if clean_chap in str(c).strip().lower() or str(c).strip().lower() in clean_chap:
-                    link = links.get(f_name)
-                    if link:
-                        browser_link = link.replace("?dl=0", "?raw=1").replace("?dl=1", "?raw=1")
-                        return f"🔗 **Open Source Book:** [{f_name}]({browser_link}) *(Once opened, search the index for: '{chapter}')*"
-    
-    # 2. Fallback: List all uploaded textbooks for this specific subject
-    all_links = []
-    for f_name, link in links.items():
-        if link:
-            browser_link = link.replace("?dl=0", "?raw=1").replace("?dl=1", "?raw=1")
-            all_links.append(f"[{f_name}]({browser_link})")
-    if all_links:
-        return f"📚 **Source Material:** " + ", ".join(all_links)
-        
-    return "⚠️ *Source link unavailable.*"
+    if all_global_links:
+        return f"📚 **Available Vault Materials:** " + ", ".join(list(set(all_global_links)))
+
+    return "⚠️ *Source link unavailable. Upload a PDF in 'Sync Content Vault'.*"
 
 # --- 7. APP LAYOUT ---
 st.title("📚 Civil Services Smart Quiz Dashboard")
@@ -557,6 +571,7 @@ with tab_quiz:
                         st.session_state['exam_answers'] = {}  
                         st.session_state['quiz_submitted'] = False
                         st.session_state['exam_mode'] = True
+                        st.session_state['current_exam_subject'] = sub_input  # Locks the subject for accurate routing
                         st.session_state['test_start_time'] = time.time()
                         st.session_state['target_duration'] = t_limit * 60
                         st.session_state['test_config'] = {"marks": marks_per_q, "penalty": neg_mark_val}
@@ -655,7 +670,7 @@ with tab_quiz:
                             break
                         
                 net = (correct * config['marks']) - (wrong * config['penalty'])
-                origin_sub = st.session_state['active_quiz'][0].get('subject', 'General')
+                origin_sub = st.session_state.get('current_exam_subject', 'General')
                 
                 test_count = len([x for x in st.session_state['quiz_history_log'] if x.get('subject') == origin_sub]) + 1
                 ist_now = get_ist_time()
@@ -691,7 +706,7 @@ with tab_quiz:
                 
         else:
             st.success("📝 Evaluation Complete")
-            origin_sub = st.session_state['active_quiz'][0].get('subject', 'General')
+            origin_sub = st.session_state.get('current_exam_subject', 'General')
             log = st.session_state['quiz_history_log'][-1]
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("Correct", f"✅ {log.get('correct',0)}")
@@ -725,7 +740,7 @@ with tab_quiz:
                     if q.get('extra_info'):
                         st.markdown(f"💡 *Strategic Point:* {q.get('extra_info')}")
                     
-                    # Direct Link Integration via Smart Router (Highlighted)
+                    # Global Smart Router Integration
                     ref_links = get_chapter_file_links_formatted(origin_sub, q.get('chapter'))
                     if ref_links:
                         st.info(ref_links)
@@ -835,7 +850,6 @@ with tab_analytics:
                                                     st.markdown(f"**Q:** {wq['question']}")
                                                     st.info(f"**Concept:** {wq['explanation']}")
                                                     
-                                                    # Direct Link Integration via Smart Router
                                                     ref_links = get_chapter_file_links_formatted(sub, w_c)
                                                     if ref_links:
                                                         st.info(ref_links)
@@ -880,7 +894,6 @@ with tab_history:
                                     if item.get('extra_info'):
                                         st.markdown(f"💡 *Strategic Point:* {item.get('extra_info')}")
                                     
-                                    # Direct Link Integration via Smart Router
                                     ref_links = get_chapter_file_links_formatted(s_tab, item.get('chapter'))
                                     if ref_links:
                                         st.info(ref_links)
@@ -896,7 +909,6 @@ with tab_history:
                                     if item.get('extra_info'):
                                         st.markdown(f"💡 *Strategic Point:* {item.get('extra_info')}")
                                     
-                                    # Direct Link Integration via Smart Router
                                     ref_links = get_chapter_file_links_formatted(s_tab, item.get('chapter'))
                                     if ref_links:
                                         st.info(ref_links)
