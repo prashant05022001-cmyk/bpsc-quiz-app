@@ -156,7 +156,7 @@ if 'exam_answers' not in st.session_state: st.session_state['exam_answers'] = {}
 # --- 5. API CONFIGURATION ---
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    model = genai.GenerativeModel('gemini-2.5-flash')
+    model = genai.GenerativeModel('gemini-2.5-flash-lite')
 except Exception:
     st.error("API Key missing! Please add it in Streamlit Advanced Settings.")
 
