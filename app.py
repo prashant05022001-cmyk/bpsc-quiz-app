@@ -10,6 +10,8 @@ import datetime
 import pandas as pd
 import plotly.express as px
 import os
+import gspread
+from google.oauth2.service_account import Credentials
 import dropbox
 import re
 
@@ -52,8 +54,35 @@ def get_clean_data():
         "recycle_bin": st.session_state.get('recycle_bin', {"subjects": {}, "chapters": {}, "files": {}})
     }
 
-# --- 2. LIGHTNING CLOUD DATABASE (DROPBOX) ---
+# --- 2. CLOUD CONNECTIONS (DROPBOX & GOOGLE SHEETS) ---
+@st.cache_resource(show_spinner=False)
+def get_gspread_client():
+    try:
+        if "GSPREAD_JSON" not in st.secrets or "SHEET_ID" not in st.secrets:
+            return None, None
+        json_creds = json.loads(st.secrets["GSPREAD_JSON"])
+        scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+        creds = Credentials.from_service_account_info(json_creds).with_scopes(scopes)
+        client = gspread.authorize(creds)
+        return client, st.secrets["SHEET_ID"]
+    except Exception:
+        return None, None
+
+def fetch_legacy_google_sheets():
+    """RESCUE BRIDGE: Fetches old data stranded in Google Sheets."""
+    client, sheet_id = get_gspread_client()
+    if client:
+        try:
+            records = client.open_by_key(sheet_id).sheet1.col_values(1)
+            if records:
+                val = "".join(records)
+                return json.loads(val)
+        except Exception:
+            pass
+    return None
+
 def save_data_to_cloud(data):
+    """Saves ONLY to lightning-fast Dropbox."""
     try:
         if "DROPBOX_TOKEN" in st.secrets:
             dbx = dropbox.Dropbox(st.secrets["DROPBOX_TOKEN"])
@@ -79,16 +108,13 @@ def upload_pdf_to_dropbox(file_bytes, file_name):
             return None
         dbx = dropbox.Dropbox(st.secrets["DROPBOX_TOKEN"])
         path = f"/{file_name}"
-        
         dbx.files_upload(file_bytes, path, mode=dropbox.files.WriteMode.overwrite)
-        
         try:
             link_info = dbx.sharing_create_shared_link_with_settings(path)
             raw_url = link_info.url
         except dropbox.exceptions.ApiError:
             links = dbx.sharing_list_shared_links(path, direct_only=True).links
             raw_url = links[0].url if links else None
-            
         if raw_url:
             return raw_url.replace("?dl=0", "?dl=1")
         return None
@@ -96,29 +122,37 @@ def upload_pdf_to_dropbox(file_bytes, file_name):
         st.error(f"📦 Dropbox PDF Sync Error: {e}")
         return None
 
-# --- 3. OPTIMIZED STORAGE LOGIC (LOCAL FIRST) ---
+# --- 3. OPTIMIZED STORAGE LOGIC (RESCUE ENABLED) ---
 DB_FILE = "database.json"
 
 def load_data():
-    # 1. LIGHTNING FAST: Try Local Hard Drive First!
+    # 1. LIGHTNING FAST: Try Local Hard Drive First
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r") as f:
                 data = json.load(f)
-                if "recycle_bin" not in data:
-                    data["recycle_bin"] = {"subjects": {}, "chapters": {}, "files": {}}
-                return data
+                if data and data.get("vault"):
+                    if "recycle_bin" not in data: data["recycle_bin"] = {"subjects": {}, "chapters": {}, "files": {}}
+                    return data
         except Exception: pass
             
-    # 2. FALLBACK: Download from Cloud only if local file is missing
+    # 2. DROPBOX CLOUD: Download if local file is missing
     cloud_data = fetch_cloud_data()
-    if cloud_data:
-        # Save a local copy so the next reboot is instant
+    if cloud_data and cloud_data.get("vault"):
         try:
-            with open(DB_FILE, "w") as f:
-                json.dump(cloud_data, f)
+            with open(DB_FILE, "w") as f: json.dump(cloud_data, f)
         except: pass
         return cloud_data
+
+    # 3. RESCUE BRIDGE: If Dropbox is empty, pull from legacy Google Sheets!
+    legacy_data = fetch_legacy_google_sheets()
+    if legacy_data and legacy_data.get("vault"):
+        st.toast("🔄 Rescuing your data from Google Sheets and moving it to Dropbox...", icon="🚀")
+        try:
+            with open(DB_FILE, "w") as f: json.dump(legacy_data, f)
+        except: pass
+        save_data_to_cloud(legacy_data) # Secure it in Dropbox permanently
+        return legacy_data
         
     return {
         "vault": {}, 
@@ -144,10 +178,6 @@ if 'db_loaded' not in st.session_state:
     st.session_state['quiz_history_log'] = saved_data.get('quiz_history_log', [])
     st.session_state['recycle_bin'] = saved_data.get('recycle_bin', {"subjects": {}, "chapters": {}, "files": {}})
     st.session_state['db_loaded'] = True
-    
-    # Auto-migrate legacy Google Sheets data to new Dropbox database if needed
-    if saved_data.get('vault') and not os.path.exists(DB_FILE):
-        save_data_to_cloud(saved_data)
 
 if 'active_quiz' not in st.session_state: st.session_state['active_quiz'] = None
 if 'quiz_submitted' not in st.session_state: st.session_state['quiz_submitted'] = False
@@ -460,7 +490,7 @@ with tab_quiz:
                         
                         st.session_state['active_quiz'] = pool
                         st.session_state['quiz_submitted'] = False
-                        st.session_state['exam_mode'] = True  # Triggers the new page view
+                        st.session_state['exam_mode'] = True
                         st.session_state['test_start_time'] = time.time()
                         st.session_state['target_duration'] = t_limit * 60
                         st.session_state['test_config'] = {"marks": marks_per_q, "penalty": neg_mark_val}
