@@ -247,14 +247,14 @@ def get_chapters_from_ai(text_chunk, subject_name, retries=3):
                 return list(dict.fromkeys(valid_chaps))
                 
         except Exception as e:
-            st.error(f"🚨 Background Gemini API Alert (Attempt {attempt+1}/{retries}): {e}")
-            if "429" in str(e) or "Quota" in str(e): 
-                time.sleep(15)
+            if "429" in str(e) or "Quota" in str(e):
+                st.toast("⏳ Speed limit hit. Pausing for 20 seconds...", icon="⏳")
+                time.sleep(21)
             else:
                 time.sleep(2)
     return []
 
-def generate_new_questions(subject, chapters, difficulty, count, item_types, vault_full_text, retries=2):
+def generate_new_questions(subject, chapters, difficulty, count, item_types, vault_full_text, retries=3):
     if count <= 0: return []
     relevant_context = ""
     if vault_full_text:
@@ -265,7 +265,6 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, vau
                 relevant_context += "\n... " + vault_full_text[max(0, start_idx-1000) : start_idx+4000]
     relevant_context = relevant_context[:25000]
 
-    # MASSIVELY UPGRADED EXAM-ORIENTED PROMPT
     prompt = f"""
     Elite Civil Services Examiner Mode. Generate {count} distinct questions for Subject: {subject} | Target Chapters: {', '.join(chapters)}.
     Difficulty: {difficulty}. Formats: {', '.join(item_types)}. Source Material context: {relevant_context}
@@ -309,11 +308,12 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, vau
             return json.loads(raw_text)
             
         except Exception as e:
-            st.error(f"🚨 Background Question Generation Error: {e}")
-            if "429" in str(e):
-                time.sleep(20)
+            # AUTO RECOVERY: Intercept the 429 error and spin a countdown instead of crashing
+            if "429" in str(e) or "Quota" in str(e):
+                with st.spinner(f"⏳ Free Tier limit reached. Automatically cooling down for 20s to reset quota (Attempt {attempt+1}/{retries})..."):
+                    time.sleep(22)
             else: 
-                return []
+                time.sleep(2)
     return []
 
 def build_markdown_export(quiz_pool, subject):
@@ -337,12 +337,10 @@ def get_active_chapters(subject):
             
     return sorted(list(set(active_chaps)))
 
-# --- NEW: GLOBAL SMART LINK ROUTER ---
 def get_chapter_file_links_formatted(subject, chapter):
     vault = st.session_state.get('vault', {})
     clean_chap = str(chapter).strip().lower() if chapter else ""
     
-    # 1. GLOBAL EXACT MATCH: Scan the entire dashboard for the chapter name
     if clean_chap:
         for sub, sub_data in vault.items():
             mapping = sub_data.get("file_chapter_mapping", {})
@@ -352,11 +350,9 @@ def get_chapter_file_links_formatted(subject, chapter):
                     if clean_chap in str(c).strip().lower() or str(c).strip().lower() in clean_chap:
                         link = links.get(f_name)
                         if link:
-                            # ?raw=1 ensures the PDF opens instantly in the browser instead of downloading
                             browser_link = link.replace("?dl=0", "?raw=1").replace("?dl=1", "?raw=1")
                             return f"🔗 **Open Source Book:** [{f_name}]({browser_link}) *(Search index for: '{chapter}')*"
     
-    # 2. LOCAL FALLBACK: If chapter isn't found, list books for the chosen subject
     sub_data = vault.get(subject, {})
     links = sub_data.get("file_links", {})
     if links:
@@ -368,7 +364,6 @@ def get_chapter_file_links_formatted(subject, chapter):
         if all_links:
             return f"📚 **Subject Material:** " + ", ".join(all_links)
     
-    # 3. GLOBAL FALLBACK: If the subject is broken/General, list EVERY book you own
     all_global_links = []
     for sub, sub_data in vault.items():
         for f_name, link in sub_data.get("file_links", {}).items():
@@ -571,13 +566,13 @@ with tab_quiz:
                         st.session_state['exam_answers'] = {}  
                         st.session_state['quiz_submitted'] = False
                         st.session_state['exam_mode'] = True
-                        st.session_state['current_exam_subject'] = sub_input  # Locks the subject for accurate routing
+                        st.session_state['current_exam_subject'] = sub_input  
                         st.session_state['test_start_time'] = time.time()
                         st.session_state['target_duration'] = t_limit * 60
                         st.session_state['test_config'] = {"marks": marks_per_q, "penalty": neg_mark_val}
                         st.rerun()
                     else:
-                        st.error("No questions available. Check your configuration or parameters.")
+                        st.error("No questions compiled. Try using 'Revision Mode' or verify text availability.")
             else:
                 st.error("Please select at least one chapter.")
 
@@ -740,7 +735,7 @@ with tab_quiz:
                     if q.get('extra_info'):
                         st.markdown(f"💡 *Strategic Point:* {q.get('extra_info')}")
                     
-                    # Global Smart Router Integration
+                    # Global Smart Link Routing Link
                     ref_links = get_chapter_file_links_formatted(origin_sub, q.get('chapter'))
                     if ref_links:
                         st.info(ref_links)
