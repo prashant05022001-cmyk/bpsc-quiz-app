@@ -13,8 +13,35 @@ import os
 import dropbox
 import re
 
-# --- PAGE SETUP ---
+# --- PAGE SETUP & GLOBAL FONT CSS ---
 st.set_page_config(page_title="Civil Services Smart Quiz Dashboard", page_icon="📚", layout="wide")
+
+st.markdown("""
+<style>
+    /* Boost global font sizes for better readability */
+    html, body, [class*="css"] {
+        font-size: 18px !important;
+    }
+    .stMarkdown p, .stMarkdown li {
+        font-size: 1.15rem !important;
+        line-height: 1.6 !important;
+    }
+    .stRadio label {
+        font-size: 1.15rem !important;
+        line-height: 1.5 !important;
+    }
+    .streamlit-expanderHeader {
+        font-size: 1.15rem !important;
+        font-weight: bold !important;
+    }
+    .stAlert p {
+        font-size: 1.1rem !important;
+    }
+    h1 { font-size: 2.5rem !important; }
+    h2 { font-size: 2.0rem !important; }
+    h3 { font-size: 1.5rem !important; }
+</style>
+""", unsafe_allow_html=True)
 
 # --- 1. CLEAN DATA HELPER ---
 def get_clean_data():
@@ -31,7 +58,6 @@ def save_data_to_cloud(data):
         if "DROPBOX_TOKEN" in st.secrets:
             dbx = dropbox.Dropbox(st.secrets["DROPBOX_TOKEN"])
             json_str = json.dumps(data)
-            # Upload the entire database as a single, fast file
             dbx.files_upload(json_str.encode('utf-8'), "/database.json", mode=dropbox.files.WriteMode.overwrite)
             st.cache_data.clear()
     except Exception as e:
@@ -74,12 +100,10 @@ def upload_pdf_to_dropbox(file_bytes, file_name):
 DB_FILE = "database.json"
 
 def load_data():
-    # Attempt Lightning Cloud Fetch
     cloud_data = fetch_cloud_data()
     if cloud_data:
         return cloud_data
             
-    # Fallback to local file (Migration pathway)
     if os.path.exists(DB_FILE):
         try:
             with open(DB_FILE, "r") as f:
@@ -113,13 +137,13 @@ if 'db_loaded' not in st.session_state:
     st.session_state['quiz_history_log'] = saved_data.get('quiz_history_log', [])
     st.session_state['recycle_bin'] = saved_data.get('recycle_bin', {"subjects": {}, "chapters": {}, "files": {}})
     st.session_state['db_loaded'] = True
-    # Auto-migrate legacy Google Sheets data to new Dropbox database
     if saved_data.get('vault'):
         save_data_to_cloud(saved_data)
 
 if 'active_quiz' not in st.session_state: st.session_state['active_quiz'] = None
 if 'quiz_submitted' not in st.session_state: st.session_state['quiz_submitted'] = False
-if 'test_config' not in st.session_state: st.session_state['test_config'] = {"marks": 2.0, "penalty": 0.66}
+if 'exam_mode' not in st.session_state: st.session_state['exam_mode'] = False
+if 'test_config' not in st.session_state: st.session_state['test_config'] = {"marks": 1.0, "penalty": 0.33}
 
 # --- 5. API CONFIGURATION ---
 try:
@@ -264,8 +288,10 @@ st.write("---")
 tab_quiz, tab_analytics, tab_history, tab_settings = st.tabs(["🎯 Live Simulator", "📊 Analytics Hub", "🗄️ Question Bank", "⚙️ Vault Management"])
 
 with tab_quiz:
-    col1, col2 = st.columns([1, 2])
-    with col1:
+    # ---------------------------------------------
+    # SETUP MODE (Visible only when NOT taking an exam)
+    # ---------------------------------------------
+    if not st.session_state['exam_mode']:
         st.header("1. Sync Content Vault")
         existing_subs = list(st.session_state['vault'].keys())
         
@@ -273,7 +299,7 @@ with tab_quiz:
         if existing_subs:
             sub_options = ["All Subjects"] + [f"{s} ({len(get_active_chapters(s))} Chapters)" for s in existing_subs]
             
-        sub_mode = st.radio("Mode:", ["Existing Subject", "New Subject"])
+        sub_mode = st.radio("Mode:", ["Existing Subject", "New Subject"], horizontal=True)
         
         if sub_mode == "Existing Subject" and sub_options:
             selected_sub_display = st.selectbox("Subject:", options=sub_options)
@@ -283,12 +309,7 @@ with tab_quiz:
         
         if sub_input and sub_input != "All Subjects" and sub_input not in st.session_state['vault']:
             st.session_state['vault'][sub_input] = {
-                "chapters": [], 
-                "content": "", 
-                "files": [],
-                "file_chapter_mapping": {},
-                "manual_chapters": [],
-                "file_links": {}
+                "chapters": [], "content": "", "files": [], "file_chapter_mapping": {}, "manual_chapters": [], "file_links": {}
             }
             save_data()
             st.rerun()
@@ -366,6 +387,7 @@ with tab_quiz:
                         time.sleep(1)
                         st.rerun()
 
+        st.write("---")
         st.header("2. Build Custom Deck")
         if sub_input == "All Subjects":
             chaps = []
@@ -377,21 +399,25 @@ with tab_quiz:
         select_all = st.checkbox("Select All Chapters")
         sel_chaps = chaps if select_all else st.multiselect("Select Topics:", options=chaps)
             
-        diff = st.selectbox("Difficulty:", ["Easy", "Moderate", "Hard", "UPSC Level"])
-        q_vol = st.slider("Total Questions:", 5, 25, 10)
-        t_limit = st.number_input("Timer (Mins):", 1, 60, q_vol)
+        col_c1, col_c2, col_c3 = st.columns(3)
+        with col_c1:
+            diff = st.selectbox("Difficulty:", ["Easy", "Moderate", "Hard", "UPSC Level"])
+        with col_c2:
+            q_vol = st.slider("Total Questions:", 5, 25, 10)
+        with col_c3:
+            t_limit = st.number_input("Timer (Mins):", 1, 60, q_vol)
         
         st.markdown("**Custom Scoring Parameters:**")
         col_m1, col_m2 = st.columns(2)
         with col_m1:
-            marks_per_q = st.number_input("Marks per Correct:", min_value=0.5, max_value=5.0, value=2.0, step=0.5)
+            marks_per_q = st.number_input("Marks per Correct:", min_value=0.5, max_value=5.0, value=1.0, step=0.5)
         with col_m2:
-            neg_mark_val = st.number_input("Negative Penalty:", min_value=0.0, max_value=5.0, value=0.66, step=0.01)
+            neg_mark_val = st.number_input("Negative Penalty:", min_value=0.0, max_value=5.0, value=0.33, step=0.01)
 
         st.write("---")
         force_revision = st.checkbox("🔄 Revision Mode (Bypass AI & Quotas. Use Question Bank Only)", value=False)
 
-        if st.button("Generate Question Deck 🔥"):
+        if st.button("Generate Question Deck 🔥", use_container_width=True):
             if sel_chaps:
                 with st.spinner("Compiling comprehensive questions..."):
                     if sub_input == "All Subjects": v_text = "\n".join([st.session_state['vault'][s].get("content", "") for s in existing_subs])
@@ -425,6 +451,7 @@ with tab_quiz:
                         
                         st.session_state['active_quiz'] = pool
                         st.session_state['quiz_submitted'] = False
+                        st.session_state['exam_mode'] = True  # Triggers the new page view
                         st.session_state['test_start_time'] = time.time()
                         st.session_state['target_duration'] = t_limit * 60
                         st.session_state['test_config'] = {"marks": marks_per_q, "penalty": neg_mark_val}
@@ -434,123 +461,145 @@ with tab_quiz:
             else:
                 st.error("Please select at least one chapter.")
 
-    with col2:
+    # ---------------------------------------------
+    # EXAM MODE (Full Screen Chamber View)
+    # ---------------------------------------------
+    else:
         st.header("3. Examination Chamber")
-        if st.session_state['active_quiz']:
-            if not st.session_state['quiz_submitted']:
-                rem = max(0, int(st.session_state.get('target_duration', 600) - (time.time() - st.session_state.get('test_start_time', time.time()))))
+        
+        if not st.session_state['quiz_submitted']:
+            # Abort Button
+            if st.button("🔙 Exit Exam (Return to Setup)"):
+                st.session_state['exam_mode'] = False
+                st.session_state['active_quiz'] = None
+                st.rerun()
                 
-                timer_html = f"""
-                <div style="font-family: sans-serif; font-size: 24px; font-weight: bold; color: #ff4b4b; background-color: #ffeaea; border: 2px solid #ff4b4b; border-radius: 8px; padding: 10px; text-align: center; margin-bottom: 20px;">
-                    ⏱️ Time Remaining: <span id="clock"></span>
-                </div>
-                <script>
-                    var timeLeft = {rem};
-                    var display = document.getElementById('clock');
-                    var timerId = setInterval(function () {{
-                        if (timeLeft >= 0) {{
-                            var m = Math.floor(timeLeft / 60).toString().padStart(2, '0');
-                            var s = (timeLeft % 60).toString().padStart(2, '0');
-                            display.textContent = m + ":" + s;
-                            timeLeft--;
-                        }} else {{
-                            clearInterval(timerId);
-                            display.textContent = "TIME UP! Please Submit.";
-                        }}
-                    }}, 1000);
-                </script>
-                """
-                components.html(timer_html, height=80)
+            rem = max(0, int(st.session_state.get('target_duration', 600) - (time.time() - st.session_state.get('test_start_time', time.time()))))
             
-            ans = {}
-            for i, q in enumerate(st.session_state['active_quiz']):
-                st.markdown(f"**Q{i+1}.** <span style='color:#007BFF;'>[{q.get('type', 'MCQ')}]</span> {q['question']}", unsafe_allow_html=True)
-                ans[i] = st.radio(f"Opt {i}", options=["Skip"] + [f"{k}) {v}" for k,v in q['options'].items()], key=f"q{i}", label_visibility="collapsed")
-                st.write("")
+            timer_html = f"""
+            <div style="font-family: sans-serif; font-size: 26px; font-weight: bold; color: #ff4b4b; background-color: #ffeaea; border: 2px solid #ff4b4b; border-radius: 8px; padding: 15px; text-align: center; margin-bottom: 20px; position: sticky; top: 0; z-index: 999;">
+                ⏱️ Time Remaining: <span id="clock"></span>
+            </div>
+            <script>
+                var timeLeft = {rem};
+                var display = document.getElementById('clock');
+                var timerId = setInterval(function () {{
+                    if (timeLeft >= 0) {{
+                        var m = Math.floor(timeLeft / 60).toString().padStart(2, '0');
+                        var s = (timeLeft % 60).toString().padStart(2, '0');
+                        display.textContent = m + ":" + s;
+                        timeLeft--;
+                    }} else {{
+                        clearInterval(timerId);
+                        display.textContent = "TIME UP! Please Submit.";
+                    }}
+                }}, 1000);
+            </script>
+            """
+            components.html(timer_html, height=90)
+        
+        ans = {}
+        for i, q in enumerate(st.session_state['active_quiz']):
+            st.markdown(f"**Q{i+1}.** <span style='color:#007BFF;'>[{q.get('type', 'MCQ')}]</span> {q['question']}", unsafe_allow_html=True)
+            
+            # The key parameter ensures selections are NEVER lost even if you change tabs
+            radio_key = f"ans_{q['id']}_{i}"
+            ans[i] = st.radio(f"Opt {i}", options=["Skip"] + [f"{k}) {v}" for k,v in q['options'].items()], key=radio_key, label_visibility="collapsed")
+            st.write("---")
 
-            if not st.session_state['quiz_submitted']:
-                if st.button("Submit Assessment & Evaluate", type="primary"):
-                    st.session_state['quiz_submitted'] = True
-                    correct, wrong, skipped = 0, 0, 0
-                    c_perf = {c: {"correct": 0, "incorrect": 0} for c in sel_chaps}
-                    wrong_details = []
-                    
-                    config = st.session_state['test_config']
-                    
-                    for i, q in enumerate(st.session_state['active_quiz']):
-                        qc = q.get('chapter', 'General')
-                        if qc not in c_perf: c_perf[qc] = {"correct": 0, "incorrect": 0}
-                        
-                        is_correct = False
-                        if ans[i] == "Skip": 
-                            skipped += 1
-                        elif ans[i].startswith(q['correct']): 
-                            correct += 1
-                            c_perf[qc]["correct"] += 1
-                            is_correct = True
-                        else: 
-                            wrong += 1
-                            c_perf[qc]["incorrect"] += 1
-                            wrong_details.append({"chapter": qc, "question": q['question'], "explanation": q['explanation']})
-                            
-                        for oq in st.session_state['old_questions']:
-                            if oq.get('id') == q.get('id'):
-                                oq['last_attempt_correct'] = is_correct
-                                break
-                            
-                    net = (correct * config['marks']) - (wrong * config['penalty'])
-                    
-                    test_count = len([x for x in st.session_state['quiz_history_log'] if x.get('subject') == sub_input]) + 1
-                    ist_now = get_ist_time()
-                    timestamp_full = ist_now.strftime("%d %b %Y, %I:%M %p")
-                    timestamp_compact = ist_now.strftime("%d%b_%I%M%p")
-                    test_name_formatted = f"{sub_input}_Test_{test_count}_{timestamp_compact}"
-                    
-                    for q in st.session_state['active_quiz']:
-                        for oq in st.session_state['old_questions']:
-                            if oq.get('id') == q.get('id'):
-                                oq['test_ref'] = test_name_formatted
-                                break
-
-                    st.session_state['quiz_history_log'].append({
-                        "subject": sub_input,
-                        "test_name": test_name_formatted,
-                        "date_str": timestamp_full,
-                        "correct": correct, "incorrect": wrong, "skipped": skipped,
-                        "net": round(net, 2), "total_items": len(st.session_state['active_quiz']),
-                        "penalty": round((wrong * config['penalty']), 2),
-                        "chapter_perf": c_perf,
-                        "wrong_details": wrong_details
-                    })
-                    save_data()
-                    st.rerun()
-            else:
-                st.success("📝 Evaluation Complete")
-                log = st.session_state['quiz_history_log'][-1]
-                m1, m2, m3, m4 = st.columns(4)
-                m1.metric("Correct", f"✅ {log.get('correct',0)}")
-                m2.metric("Negative", f"❌ -{log.get('penalty',0)}")
-                m3.metric("Skipped", f"⚪ {log.get('skipped',0)}")
-                m4.metric("Net Marks", f"🎯 {log.get('net',0)}")
+        if not st.session_state['quiz_submitted']:
+            st.write("")
+            if st.button("Submit Assessment & Evaluate", type="primary", use_container_width=True):
+                st.session_state['quiz_submitted'] = True
+                correct, wrong, skipped = 0, 0, 0
                 
-                md_out = build_markdown_export(st.session_state['active_quiz'], sub_input)
-                st.download_button("📄 Export Practice Set", data=md_out, file_name=f"{log.get('test_name')}.md", mime="text/markdown")
+                # Retrieve active chapters from pool
+                pool_chaps = list(set([q.get('chapter', 'General') for q in st.session_state['active_quiz']]))
+                c_perf = {c: {"correct": 0, "incorrect": 0} for c in pool_chaps}
+                wrong_details = []
                 
-                st.write("---")
+                config = st.session_state['test_config']
+                
                 for i, q in enumerate(st.session_state['active_quiz']):
-                    st.markdown(f"**Q{i+1}:** {q['question']}")
-                    for k, v in q['options'].items():
-                        if k == q['correct']: st.markdown(f"🟩 **{k}) {v} (Correct Key)**")
-                        elif ans[i].startswith(k) and ans[i] != "Skip": st.markdown(f"🟥 **{k}) {v} (Your Pick)**")
-                        else: st.markdown(f"⚪ {k}) {v}")
-                    with st.expander("📘 Comprehensive Topic Mastery (Complete Revision)"):
-                        st.markdown(f"{q['explanation']}")
-                        st.markdown(f"💡 *Strategic Point:* {q.get('extra_info','')}")
+                    qc = q.get('chapter', 'General')
+                    if qc not in c_perf: c_perf[qc] = {"correct": 0, "incorrect": 0}
+                    
+                    is_correct = False
+                    if ans[i] == "Skip": 
+                        skipped += 1
+                    elif ans[i].startswith(q['correct']): 
+                        correct += 1
+                        c_perf[qc]["correct"] += 1
+                        is_correct = True
+                    else: 
+                        wrong += 1
+                        c_perf[qc]["incorrect"] += 1
+                        wrong_details.append({"chapter": qc, "question": q['question'], "explanation": q['explanation']})
+                        
+                    for oq in st.session_state['old_questions']:
+                        if oq.get('id') == q.get('id'):
+                            oq['last_attempt_correct'] = is_correct
+                            break
+                        
+                net = (correct * config['marks']) - (wrong * config['penalty'])
                 
-                if st.button("Reload Simulator"):
-                    st.session_state['active_quiz'] = None
-                    st.session_state['quiz_submitted'] = False
-                    st.rerun()
+                # Grab the original subject used to generate this specific test
+                origin_sub = st.session_state['active_quiz'][0].get('subject', 'General')
+                
+                test_count = len([x for x in st.session_state['quiz_history_log'] if x.get('subject') == origin_sub]) + 1
+                ist_now = get_ist_time()
+                timestamp_full = ist_now.strftime("%d %b %Y, %I:%M %p")
+                timestamp_compact = ist_now.strftime("%d%b_%I%M%p")
+                test_name_formatted = f"{origin_sub}_Test_{test_count}_{timestamp_compact}"
+                
+                for q in st.session_state['active_quiz']:
+                    for oq in st.session_state['old_questions']:
+                        if oq.get('id') == q.get('id'):
+                            oq['test_ref'] = test_name_formatted
+                            break
+
+                st.session_state['quiz_history_log'].append({
+                    "subject": origin_sub,
+                    "test_name": test_name_formatted,
+                    "date_str": timestamp_full,
+                    "correct": correct, "incorrect": wrong, "skipped": skipped,
+                    "net": round(net, 2), "total_items": len(st.session_state['active_quiz']),
+                    "penalty": round((wrong * config['penalty']), 2),
+                    "chapter_perf": c_perf,
+                    "wrong_details": wrong_details
+                })
+                save_data()
+                st.rerun()
+        else:
+            st.success("📝 Evaluation Complete")
+            origin_sub = st.session_state['active_quiz'][0].get('subject', 'General')
+            log = st.session_state['quiz_history_log'][-1]
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("Correct", f"✅ {log.get('correct',0)}")
+            m2.metric("Negative", f"❌ -{log.get('penalty',0)}")
+            m3.metric("Skipped", f"⚪ {log.get('skipped',0)}")
+            m4.metric("Net Marks", f"🎯 {log.get('net',0)}")
+            
+            md_out = build_markdown_export(st.session_state['active_quiz'], origin_sub)
+            st.download_button("📄 Export Practice Set", data=md_out, file_name=f"{log.get('test_name')}.md", mime="text/markdown")
+            
+            if st.button("🔙 Build New Practice Test", type="primary", use_container_width=True):
+                st.session_state['exam_mode'] = False
+                st.session_state['active_quiz'] = None
+                st.session_state['quiz_submitted'] = False
+                st.rerun()
+
+            st.write("---")
+            for i, q in enumerate(st.session_state['active_quiz']):
+                st.markdown(f"**Q{i+1}:** {q['question']}")
+                for k, v in q['options'].items():
+                    if k == q['correct']: st.markdown(f"🟩 **{k}) {v} (Correct Key)**")
+                    elif ans[i].startswith(k) and ans[i] != "Skip": st.markdown(f"🟥 **{k}) {v} (Your Pick)**")
+                    else: st.markdown(f"⚪ {k}) {v}")
+                with st.expander("📘 Comprehensive Topic Mastery (Complete Revision)"):
+                    st.markdown(f"{q['explanation']}")
+                    st.markdown(f"💡 *Strategic Point:* {q.get('extra_info','')}")
+                st.write("---")
 
 with tab_analytics:
     st.header("📊 Performance Analytics Hub")
