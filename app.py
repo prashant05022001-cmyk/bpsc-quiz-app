@@ -263,18 +263,21 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, vau
                 relevant_context += "\n... " + vault_full_text[max(0, start_idx-1000) : start_idx+4000]
     relevant_context = relevant_context[:25000]
 
+    # MASSIVELY UPGRADED EXAM-ORIENTED PROMPT
     prompt = f"""
-    Elite Civil Services Examiner Mode. Generate {count} distinct questions for Subject: {subject} | Chapters: {', '.join(chapters)}.
+    Elite Civil Services Examiner Mode. Generate {count} distinct questions for Subject: {subject} | Target Chapters: {', '.join(chapters)}.
     Difficulty: {difficulty}. Formats: {', '.join(item_types)}. Source Material context: {relevant_context}
 
-    CRITICAL EXAM ORIENTATION:
-    1. Heavy Factual Focus: Questions must test hard factual knowledge, exact dates/years of historical milestones, chronological ordering of events, and data points—matching the traditional preliminary framework of UPSC, BPSC, and State PCS.
-    2. Modern Statements Pairing Format: For multi-statement questions, construct individual points (Statement 1, Statement 2, etc.) and format options exactly like this:
+    CRITICAL EXAM ORIENTATION (UPSC/BPSC PRELIMS PATTERN):
+    1. Factual & Chronological Rigor: Heavily include questions testing exact dates of events, chronological ordering of events (e.g., "Arrange the following in chronological order"), exact data points, and statutory provisions.
+    2. Modern Statement Pairing Format: For complex multi-statement questions, you MUST format the options EXACTLY like the recent UPSC pattern. Example:
        - A) Only one statement is correct
        - B) Only two statements are correct
-       - C) Only three statements are correct
-       - D) All of the statements are correct / None of the statements are correct
-    3. Comprehensive Topic Mastery: Do NOT just explain the correct option. The 'explanation' field must deliver a massive, multi-paragraph revision block encompassing all core background details of that complete topic.
+       - C) All three statements are correct (or 'Only three' if there are 4)
+       - D) None of the statements are correct
+    3. JSON Constraint: The 'chapter' field in the JSON MUST be chosen EXACTLY from this list: {', '.join(chapters)}. Do not invent chapter names.
+
+    CRITICAL INSTRUCTION FOR 'explanation': Do NOT just explain the correct option. You MUST provide a COMPREHENSIVE, multi-paragraph revision summary of the ENTIRE core topic mentioned in the question based strictly on the provided context. 
 
     Return JSON array exactly:
     [ {{"id": {random.randint(10000,99999)}, "type": "MCQ", "chapter": "{chapters[0] if chapters else 'General'}", "question": "Q?", "options": {{"A": "...", "B": "...", "C": "...", "D": "..."}}, "correct": "A", "explanation": "Massive detailed topic summary here...", "extra_info": "Fact."}} ]
@@ -332,12 +335,15 @@ def get_active_chapters(subject):
             
     return sorted(list(set(active_chaps)))
 
-# SMART LINK ROUTER: Bulletproof fallback matching logic
+# SMART LINK ROUTER: Bulletproof fallback matching logic with highlighted UI
 def get_chapter_file_links_formatted(subject, chapter):
     if not subject: return ""
     sub_data = st.session_state['vault'].get(subject, {})
     mapping = sub_data.get("file_chapter_mapping", {})
     links = sub_data.get("file_links", {})
+    
+    if not links:
+        return "⚠️ *Source link unavailable. Re-upload this PDF in 'Sync Content Vault' to enable 1-click access.*"
     
     # 1. Try robust partial text mapping
     if chapter:
@@ -347,16 +353,19 @@ def get_chapter_file_links_formatted(subject, chapter):
                 if clean_chap in str(c).strip().lower() or str(c).strip().lower() in clean_chap:
                     link = links.get(f_name)
                     if link:
-                        return f"🔗 **Dive Deeper:** [Read Chapter/Topic in {f_name}]({link})"
+                        browser_link = link.replace("?dl=0", "?raw=1").replace("?dl=1", "?raw=1")
+                        return f"🔗 **Open Source Book:** [{f_name}]({browser_link}) *(Once opened, search the index for: '{chapter}')*"
     
-    # 2. Fallback: List all uploaded textbooks for this specific subject loop
+    # 2. Fallback: List all uploaded textbooks for this specific subject
     all_links = []
     for f_name, link in links.items():
         if link:
-            all_links.append(f"[{f_name}]({link})")
+            browser_link = link.replace("?dl=0", "?raw=1").replace("?dl=1", "?raw=1")
+            all_links.append(f"[{f_name}]({browser_link})")
     if all_links:
-        return f"📚 **Subject Material:** Revise from " + ", ".join(all_links)
-    return ""
+        return f"📚 **Source Material:** " + ", ".join(all_links)
+        
+    return "⚠️ *Source link unavailable.*"
 
 # --- 7. APP LAYOUT ---
 st.title("📚 Civil Services Smart Quiz Dashboard")
@@ -371,6 +380,9 @@ st.write("---")
 tab_quiz, tab_analytics, tab_history, tab_settings = st.tabs(["🎯 Live Simulator", "📊 Analytics Hub", "🗄️ Question Bank", "⚙️ Vault Management"])
 
 with tab_quiz:
+    # ---------------------------------------------
+    # SETUP MODE 
+    # ---------------------------------------------
     if not st.session_state['exam_mode']:
         st.header("1. Sync Content Vault")
         existing_subs = list(st.session_state['vault'].keys())
@@ -713,10 +725,10 @@ with tab_quiz:
                     if q.get('extra_info'):
                         st.markdown(f"💡 *Strategic Point:* {q.get('extra_info')}")
                     
-                    # Direct Link Integration via Smart Router
+                    # Direct Link Integration via Smart Router (Highlighted)
                     ref_links = get_chapter_file_links_formatted(origin_sub, q.get('chapter'))
                     if ref_links:
-                        st.markdown(ref_links)
+                        st.info(ref_links)
                         
                 st.write("---")
 
@@ -826,7 +838,7 @@ with tab_analytics:
                                                     # Direct Link Integration via Smart Router
                                                     ref_links = get_chapter_file_links_formatted(sub, w_c)
                                                     if ref_links:
-                                                        st.markdown(ref_links)
+                                                        st.info(ref_links)
                                                     st.write("---")
 
                             with cB:
@@ -871,7 +883,7 @@ with tab_history:
                                     # Direct Link Integration via Smart Router
                                     ref_links = get_chapter_file_links_formatted(s_tab, item.get('chapter'))
                                     if ref_links:
-                                        st.markdown(ref_links)
+                                        st.info(ref_links)
                                 st.write("---")
                                 
                         with rt_tab:
@@ -887,7 +899,7 @@ with tab_history:
                                     # Direct Link Integration via Smart Router
                                     ref_links = get_chapter_file_links_formatted(s_tab, item.get('chapter'))
                                     if ref_links:
-                                        st.markdown(ref_links)
+                                        st.info(ref_links)
                                 st.write("---")
     else:
         st.write("Storage registers empty.")
