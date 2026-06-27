@@ -200,7 +200,6 @@ if 'migration_done' not in st.session_state:
 # --- 5. API CONFIGURATION ---
 try:
     genai.configure(api_key=st.secrets["GEMINI_API_KEY"])
-    # ⚡ ENGINE: Running on the ultra-cheap and fast Lite model
     model = genai.GenerativeModel('gemini-2.5-flash-lite')
 except Exception:
     st.error("API Key missing! Please add it in Streamlit Advanced Settings.")
@@ -268,18 +267,24 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, vau
 
     prompt = f"""
     Elite Civil Services Examiner Mode. Generate {count} distinct questions for Subject: {subject} | Target Chapters: {', '.join(chapters)}.
-    Difficulty: {difficulty}. Formats: {', '.join(item_types)}. Source Material context: {relevant_context}
+    Difficulty: {difficulty}. Source Material context: {relevant_context}
 
     CRITICAL EXAM ORIENTATION (UPSC/BPSC PRELIMS PATTERN):
-    1. Factual & Chronological Rigor: Heavily include questions testing exact dates of events, chronological ordering of events (e.g., "Arrange the following in chronological order"), exact data points, and statutory provisions.
-    2. Modern Statement Pairing Format: For complex multi-statement questions, you MUST format the options EXACTLY like the recent UPSC pattern. Example:
-       - A) Only one statement is correct
-       - B) Only two statements are correct
-       - C) All three statements are correct (or 'Only three' if there are 4)
-       - D) None of the statements are correct
-    3. JSON Constraint: The 'chapter' field in the JSON MUST be chosen EXACTLY from this list: {', '.join(chapters)}. Do not invent chapter names.
+    You MUST strictly generate questions in the following formats based on the provided text:
+    1. CHRONOLOGY: Arrange historical events, acts, or battles in chronological order.
+    2. MATCHING (List I vs List II): Match dates, events, personalities, or facts.
+    3. NEW UPSC PAIRS FORMAT: Questions evaluating pairs.
+    4. HARD FACTS: Specific dates, percentages, or data points mentioned in the text.
 
-    CRITICAL INSTRUCTION FOR 'explanation': Do NOT just explain the correct option. You MUST provide a COMPREHENSIVE, multi-paragraph revision summary of the ENTIRE core topic mentioned in the question based strictly on the provided context. 
+    For multi-statement or pair questions, use exactly this option format:
+    - A) Only one pair / Only one statement
+    - B) Only two pairs / Only two statements
+    - C) All three pairs / All three statements
+    - D) None
+
+    JSON Constraint: The 'chapter' field MUST match one from this list exactly: {', '.join(chapters)}. Do not invent chapter names.
+
+    CRITICAL INSTRUCTION FOR 'explanation': Do NOT just explain the correct option. You MUST provide a COMPREHENSIVE, multi-paragraph revision summary of the ENTIRE core topic mentioned in the question. 
 
     Return JSON array exactly:
     [ {{"id": {random.randint(10000,99999)}, "type": "MCQ", "chapter": "{chapters[0] if chapters else 'General'}", "question": "Q?", "options": {{"A": "...", "B": "...", "C": "...", "D": "..."}}, "correct": "A", "explanation": "Massive detailed topic summary here...", "extra_info": "Fact."}} ]
@@ -309,7 +314,6 @@ def generate_new_questions(subject, chapters, difficulty, count, item_types, vau
             return json.loads(raw_text)
             
         except Exception as e:
-            # 🛡️ AUTO-RECOVERY: Bypasses the 429 Error Gracefully
             if "429" in str(e) or "Quota" in str(e):
                 with st.spinner(f"⏳ Free Tier speed limit reached. Automatically cooling down for 20s to reset quota (Attempt {attempt+1}/{retries})..."):
                     time.sleep(22)
@@ -338,12 +342,14 @@ def get_active_chapters(subject):
             
     return sorted(list(set(active_chaps)))
 
-# 🔗 SMART LINK ROUTER: Bulletproof global matching logic
 def get_chapter_file_links_formatted(subject, chapter):
     vault = st.session_state.get('vault', {})
     clean_chap = str(chapter).strip().lower() if chapter else ""
     
-    # 1. Global Exact Match
+    # Check if a Dropbox token is even configured
+    if "DROPBOX_TOKEN" not in st.secrets:
+        return "⚠️ *PDF link missing. To enable 1-click access, ensure your Dropbox Token is set in Secrets and re-upload the PDF.*"
+    
     if clean_chap:
         for sub, sub_data in vault.items():
             mapping = sub_data.get("file_chapter_mapping", {})
@@ -354,9 +360,8 @@ def get_chapter_file_links_formatted(subject, chapter):
                         link = links.get(f_name)
                         if link:
                             browser_link = link.replace("?dl=0", "?raw=1").replace("?dl=1", "?raw=1")
-                            return f"🔗 **Open Source Book:** [{f_name}]({browser_link}) *(Search index for: '{chapter}')*"
+                            return f"🔗 **Open Source Book:** [{f_name}]({browser_link}) *(Use Ctrl+F to search for: '{chapter}')*"
     
-    # 2. Local Fallback
     sub_data = vault.get(subject, {})
     links = sub_data.get("file_links", {})
     if links:
@@ -368,7 +373,6 @@ def get_chapter_file_links_formatted(subject, chapter):
         if all_links:
             return f"📚 **Subject Material:** " + ", ".join(all_links)
     
-    # 3. Global Fallback (Catch-All)
     all_global_links = []
     for sub, sub_data in vault.items():
         for f_name, link in sub_data.get("file_links", {}).items():
@@ -379,7 +383,7 @@ def get_chapter_file_links_formatted(subject, chapter):
     if all_global_links:
         return f"📚 **Available Vault Materials:** " + ", ".join(list(set(all_global_links)))
 
-    return "⚠️ *Source link unavailable. Upload a PDF in 'Sync Content Vault'.*"
+    return "⚠️ *PDF link missing. Upload a PDF in 'Sync Content Vault' to enable.*"
 
 # --- 7. APP LAYOUT ---
 st.title("📚 Civil Services Smart Quiz Dashboard")
@@ -740,7 +744,6 @@ with tab_quiz:
                     if q.get('extra_info'):
                         st.markdown(f"💡 *Strategic Point:* {q.get('extra_info')}")
                     
-                    # Global Smart Router Integration
                     ref_links = get_chapter_file_links_formatted(origin_sub, q.get('chapter'))
                     if ref_links:
                         st.info(ref_links)
